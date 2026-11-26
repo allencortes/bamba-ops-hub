@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OPS Hub — Bamba Travel</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo-dot"></span>
+      <div>
+        <h1>OPS Hub <span class="version-pill">v2</span></h1>
+        <p class="subtitle">Live Operational & Financial Control (CRM + Books)</p>
+      </div>
+    </div>
+
+    <div class="filters">
+      <span id="sdkStatus" class="badge badge-warn">Connecting Zoho...</span>
+
+      <select id="filterStage" title="Booking Stage">
+        <option value="Booking Won" selected>Stage: Booking Won</option>
+        <option value="Booked (On Hold)">Stage: Booked (On Hold)</option>
+        <option value="TEST">Stage: TEST (Sandbox)</option>
+      </select>
+
+      <select id="filterPlatform" title="Sales Platform">
+        <option value="ALL">All Platforms</option>
+        <option value="Bamba Travel">Bamba Travel</option>
+        <option value="Baboo Travel">Baboo Travel</option>
+        <option value="BeDMC">BeDMC</option>
+        <option value="BeMexicoDMC">BeMexicoDMC</option>
+        <option value="BePeruDMC">BePeruDMC</option>
+        <option value="Peru Inca Trail">Peru Inca Trail</option>
+        <option value="Urban Day Trips">Urban Day Trips</option>
+      </select>
+
+      <select id="filterOwner" title="Assigned Coordinator">
+        <option value="ALL">All Coordinators</option>
+      </select>
+
+      <select id="filterStartDate" title="Trip Start Date Window">
+        <option value="ALL">Start Date: All</option>
+        <option value="NEXT_7">Next 7 Days</option>
+        <option value="NEXT_14">Next 14 Days</option>
+        <option value="THIS_MONTH">This Month</option>
+        <option value="NEXT_MONTH">Next Month</option>
+      </select>
+
+      <input type="text" id="searchInput" placeholder="Search Booking #, client, or name..." />
+      <button id="btnRefresh" class="btn btn-secondary">↻ Refresh</button>
+    </div>
+  </header>
+
+  <nav class="subnav" id="mainTabs">
+    <button type="button" class="tab-btn active" data-tab="operations">Operations</button>
+    <button type="button" class="tab-btn" data-tab="finance">Finance &amp; Margins</button>
+    <button type="button" class="tab-btn" data-tab="statements">Supplier Statements</button>
+    <button type="button" class="tab-btn" data-tab="reports">Management &amp; Reports</button>
+  </nav>
+
+  <main class="workspace-single">
+    <!-- TAB 1: OPERATIONS -->
+    <section id="tab-operations" class="tab-view active">
+      <div class="list-summary-bar">
+        <div>
+          <h2>Active Bookings (<span id="bookingsCount">0</span>)</h2>
+          <p class="subtitle">Click any booking row to expand its passengers, notes, attachments, and operations.</p>
+        </div>
+        <div id="ownerWorkloadBar" class="workload-pills"></div>
+      </div>
+
+      <div id="bookingsAccordion" class="accordion-list">
+        <div class="empty-state">Loading bookings from Zoho CRM...</div>
+      </div>
+    </section>
+
+    <!-- TAB 2: FINANCE & MARGINS -->
+    <section id="tab-finance" class="tab-view hidden">
+      <div class="list-summary-bar">
+        <div>
+          <h2>Finance &amp; Margins Overview</h2>
+          <p class="subtitle">Gross/Net Sale, Quoted vs. Real Cost, and Margin performance per Booking.</p>
+        </div>
+      </div>
+      <div id="financeContainer" class="section-card">
+        <div class="empty-state">Loading financial overview...</div>
+      </div>
+    </section>
+
+    <!-- TAB 3: SUPPLIER STATEMENTS -->
+    <section id="tab-statements" class="tab-view hidden">
+      <div class="section-card empty-state-large">
+        <h3>Supplier Statement Reconciliation</h3>
+        <p>Coming in Step 5: Filter operations by supplier and date range, cross-check statements, and batch-schedule Thursday Wise/transfer payments.</p>
+      </div>
+    </section>
+
+    <!-- TAB 4: MANAGEMENT & REPORTS -->
+    <section id="tab-reports" class="tab-view hidden">
+      <div class="section-card empty-state-large">
+        <h3>Management &amp; Agent Performance Reports</h3>
+        <p>Coming in Step 5: Monthly/weekly trip volume, coordinator workload distribution, completion rates, and role-based access.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODAL BULK CREATE OPERATIONS -->
+  <div id="bulkModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Add Operations to Booking <span id="modalBookingLabel"></span></h3>
+        <button id="closeBulkModal" class="btn-icon">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">
+          Each row creates a record in <strong>Operations (Bills)</strong> linked to this Booking and automatically triggers the Purchase Order in Zoho Books.
+        </p>
+
+        <div class="bulk-toolbar">
+          <button type="button" id="btnAddRow" class="btn btn-secondary">+ Add service row</button>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="bulkIsGroup" />
+            <span>Mark as Group Departure Operation</span>
+          </label>
+        </div>
+
+        <div class="table-wrapper">
+          <table class="bulk-table" id="bulkTable">
+            <thead>
+              <tr>
+                <th>Service Date *</th>
+                <th>Supplier (Vendor) *</th>
+                <th>Service (Product) *</th>
+                <th>Pax *</th>
+                <th>Cost pp (USD) *</th>
+                <th>Books Payment Flow</th>
+                <th>Payment Date / Method</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="bulkTbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelBulk" class="btn btn-secondary">Cancel</button>
+        <button id="submitBulk" class="btn btn-primary">Create Operations in Zoho CRM</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL MANAGE / PAY -->
+  <div id="payModal" class="modal hidden">
+    <div class="modal-content modal-sm">
+      <div class="modal-header">
+        <h3>Update Status / Payment — <span id="payOpName"></span></h3>
+        <button id="closePayModal" class="btn-icon">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="payOpId" />
+
+        <div class="form-group">
+          <label>Reservation Status</label>
+          <select id="payResStatus">
+            <option value="Supplier Confirmation Awaited">Supplier Confirmation Awaited</option>
+            <option value="Supplier Confirmed">Supplier Confirmed</option>
+            <option value="Traveler Confirmation Sent">Traveler Confirmation Sent</option>
+            <option value="Trip Ended">Trip Ended</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Zoho Books Financial Action</label>
+          <select id="payActionType">
+            <option value="NONE">Update Reservation Status only</option>
+            <option value="SCHEDULED">Scheduled Payment (Creates Bill as Due)</option>
+            <option value="PAID_NOW">Paid Immediately (Creates Bill as Paid)</option>
+          </select>
+        </div>
+
+        <div id="scheduledFields" class="conditional-box hidden">
+          <div class="form-group">
+            <label>Expected Payment Date *</label>
+            <input type="date" id="payExpectedDate" />
+          </div>
+        </div>
+
+        <div id="paidNowFields" class="conditional-box hidden">
+          <div class="form-group">
+            <label>1st Payment Date *</label>
+            <input type="date" id="payDate" />
+          </div>
+          <div class="form-group">
+            <label>1st Payment Amount *</label>
+            <input type="number" step="0.01" id="payAmount" />
+          </div>
+          <div class="form-group">
+            <label>1st Payment From (Method) *</label>
+            <select id="payMethod">
+              <option value="Wise Bamba Travel Inc">Wise Bamba Travel Inc</option>
+            </select>
+          </div>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="paySendBooks" checked />
+            <span>Enable <strong>Send 1st Payment to Books</strong></span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelPay" class="btn btn-secondary">Cancel</button>
+        <button id="submitPay" class="btn btn-primary">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
