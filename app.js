@@ -1,4 +1,4 @@
-// OPS Hub v2 — Step 2 (Clean SDK Init + Attachments + Explicit Passport + Clean Notes)
+// OPS Hub v2 — Step 2 (Dual SDK Boot + Attachments + Explicit Passport + Clean Notes)
 const STATE = {
   bookings: [],
   filteredBookings: [],
@@ -13,7 +13,8 @@ const STATE = {
   vendors: [],
   products: [],
   currentUser: null,
-  activeTab: "operations"
+  activeTab: "operations",
+  booted: false
 };
 
 const BOOKS_ACCOUNTS = [
@@ -147,6 +148,43 @@ function parseCleanProductDetails(rawText) {
   return { title: titles, meta: paxList };
 }
 
+async function runBootSequence(triggerSource) {
+  if (STATE.booted) return;
+  STATE.booted = true;
+
+  const statusEl = $("sdkStatus");
+  const accordion = $("bookingsAccordion");
+
+  try {
+    // Verify bridge with Zoho CRM first
+    const userRes = await ZOHO.CRM.CONFIG.getCurrentUser();
+    STATE.currentUser = userRes?.users?.[0] || null;
+
+    if (statusEl) {
+      statusEl.textContent = "Zoho Connected";
+      statusEl.className = "badge badge-ok";
+    }
+
+    await initApp();
+  } catch (err) {
+    STATE.booted = false;
+    console.error(`Zoho SDK connection error (${triggerSource}):`, err);
+    if (statusEl) {
+      statusEl.textContent = "Connection Failed";
+      statusEl.className = "badge badge-danger";
+    }
+    if (accordion) {
+      accordion.innerHTML = `
+        <div class="empty-state">
+          <strong>Could not establish Zoho CRM bridge (${escapeHtml(triggerSource)}).</strong><br/>
+          <span class="subtitle">Error: ${escapeHtml(err?.message || JSON.stringify(err) || "No response from parent CRM frame")}</span><br/><br/>
+          <span class="subtitle">Check Setup - Developer Hub - Widgets and confirm Base URL matches: <code>${escapeHtml(window.location.origin + window.location.pathname)}</code></span>
+        </div>
+      `;
+    }
+  }
+}
+
 function bootZohoSDK() {
   const statusEl = $("sdkStatus");
 
@@ -158,23 +196,22 @@ function bootZohoSDK() {
     return;
   }
 
-  ZOHO.embeddedApp.on("PageLoad", async function () {
-    if (statusEl) {
-      statusEl.textContent = "Zoho Connected";
-      statusEl.className = "badge badge-ok";
-    }
-    try {
-      await initApp();
-    } catch (err) {
-      console.error("initApp error:", err);
-      if (statusEl) {
-        statusEl.textContent = "Init Error";
-        statusEl.className = "badge badge-danger";
-      }
-    }
+  ZOHO.embeddedApp.on("PageLoad", function () {
+    runBootSequence("PageLoad");
   });
 
-  ZOHO.embeddedApp.init();
+  try {
+    ZOHO.embeddedApp.init();
+  } catch (e) {
+    console.error("ZOHO.embeddedApp.init threw:", e);
+  }
+
+  // Fallback in case PageLoad already fired or widget is inside a Web Tab
+  setTimeout(function () {
+    if (!STATE.booted) {
+      runBootSequence("DirectInit");
+    }
+  }, 1200);
 }
 
 if (document.readyState === "loading") {
@@ -185,11 +222,7 @@ if (document.readyState === "loading") {
 
 async function initApp() {
   try {
-    const [userRes, usersListRes] = await Promise.all([
-      ZOHO.CRM.CONFIG.getCurrentUser(),
-      ZOHO.CRM.API.getAllUsers({ Type: "ActiveUsers" })
-    ]);
-    STATE.currentUser = userRes?.users?.[0] || null;
+    const usersListRes = await ZOHO.CRM.API.getAllUsers({ Type: "ActiveUsers" });
     STATE.crmUsers = usersListRes?.users || [];
   } catch (e) {
     console.warn("Could not fetch CRM users", e);
@@ -1129,4 +1162,156 @@ async function submitBulkOperations() {
   const rows = Array.from(document.querySelectorAll("#bulkTbody tr"));
   if (!rows.length) return;
 
-  const isGroup =
+  const isGroup = $("bulkIsGroup")?.checked || false;
+  const recordsToInsert = [];
+
+  for (const r of rows) {
+    const serviceDate = r.querySelector(".row-date").value;
+    const vendorId = r.querySelector(".row-vendor").value;
+    const productId = r.querySelector(".row-product").value;
+    const pax = parseInt(r.querySelector(".row-pax").value, 10) || 1;
+    const costPerPerson = parseFloat(r.querySelector(".row-cost").value) || 0;
+    const payFlow = r.querySelector(".row-payflow").value;
+    const payDate = r.querySelector(".row-paydate").value;
+    const payMethod = r.querySelector(".row-paymethod").value;
+
+    if (!vendorId || !productId || !serviceDate) {
+      showToast("Please select a valid Supplier and Service from the list, and enter a Service Date.");
+      return;
+    }
+
+    const totalRowCost = pax * costPerPerson;
+
+    const payload = {
+      Booking_Name: b.id,
+      Booking_Number: String(b.Booking_Number || ""),
+      Sales_Platform: b.Sales_Platform || "Bamba Travel",
+      Supplier_Vendor_Name: vendorId,
+      Bill_Date: serviceDate,
+      Bill_Status: "Supplier Confirmation Awaited",
+      Payment_Status: "Awaiting Payment",
+      Group_Departure_Operation: isGroup,
+      Passenger_Details: b.Contact_Name?.name || "",
+      Accommodation_Pick_up_Point: b.Accommodation_Pick_up_Point || "",
+      Flight_Details: b.Flight_Details || "",
+      Product_Details: [
+        {
+          Product_Name: productId,
+          Trip_Start_Date: serviceDate,
+          Qty: pax,
+          List_Price: costPerPerson
+        }
+      ]
+    };
+
+    if (payFlow === "SCHEDULED" && payDate) {
+      payload.Expected_Payment_Date = payDate;
+    } else if (payFlow === "PAID_NOW" && payDate) {
+      payload.st_Payment_Date = payDate;
+      payload.st_Payment_Amount = totalRowCost;
+      payload.st_Payment_platform = payMethod;
+      if (STATE.currentUser?.id) payload.Payment_By = STATE.currentUser.id;
+      payload.st_Payment_to_Books = true;
+    }
+
+    recordsToInsert.push(payload);
+  }
+
+  try {
+    showToast("Creating operations in Zoho CRM...");
+    await ZOHO.CRM.API.insertRecord({
+      Entity: "Bills",
+      APIData: recordsToInsert,
+      Trigger: ["workflow"]
+    });
+
+    toggleModal("bulkModal", false);
+    showToast(`${recordsToInsert.length} operation(s) created successfully!`);
+    await fetchOperationsForDeal(b.id);
+    renderBookingsAccordion();
+  } catch (err) {
+    console.error("Error inserting into Bills:", err);
+    showToast("Error creating operations. Check browser console for details.");
+  }
+}
+
+window.openPayModal = function (dealId, opId) {
+  STATE.expandedBookingId = dealId;
+  const ops = STATE.operationsByDeal[dealId] || [];
+  const op = ops.find((o) => o.id === opId);
+  if (!op) return;
+
+  if ($("payOpId")) $("payOpId").value = op.id;
+  if ($("payOpName")) $("payOpName").textContent = op.Name || "Operation";
+  if ($("payResStatus")) $("payResStatus").value = op.Bill_Status || "Supplier Confirmation Awaited";
+  if ($("payActionType")) $("payActionType").value = "NONE";
+  $("scheduledFields")?.classList.add("hidden");
+  $("paidNowFields")?.classList.add("hidden");
+
+  const today = new Date().toISOString().split("T")[0];
+  if ($("payExpectedDate")) $("payExpectedDate").value = op.Expected_Payment_Date || today;
+  if ($("payDate")) $("payDate").value = today;
+  if ($("payAmount")) $("payAmount").value = op.Grand_Total || 0;
+
+  toggleModal("payModal", true);
+};
+
+async function submitOperationUpdate() {
+  const dealId = STATE.expandedBookingId;
+  const opId = $("payOpId")?.value;
+  const resStatus = $("payResStatus")?.value;
+  const actionType = $("payActionType")?.value;
+  const ops = STATE.operationsByDeal[dealId] || [];
+  const op = ops.find((o) => o.id === opId);
+
+  const updateData = {
+    id: opId,
+    Bill_Status: resStatus
+  };
+
+  if (actionType === "SCHEDULED") {
+    updateData.Expected_Payment_Date = $("payExpectedDate")?.value;
+  } else if (actionType === "PAID_NOW") {
+    const payDate = $("payDate")?.value;
+    const payAmount = parseFloat($("payAmount")?.value) || 0;
+    const payMethod = $("payMethod")?.value;
+    const sendBooks = $("paySendBooks")?.checked;
+
+    if (!op?.st_Payment_to_Books) {
+      updateData.st_Payment_Date = payDate;
+      updateData.st_Payment_Amount = payAmount;
+      updateData.st_Payment_platform = payMethod;
+      if (STATE.currentUser?.id) updateData.Payment_By = STATE.currentUser.id;
+      updateData.st_Payment_to_Books = sendBooks;
+    } else if (!op?.nd_Payment_to_Books) {
+      updateData.nd_Payment_Date = payDate;
+      updateData.nd_Payment_Amount = payAmount;
+      updateData.nd_Payment_By = payMethod;
+      updateData.nd_Payment_to_Books = sendBooks;
+    } else {
+      updateData.rd_Payment_Date = payDate;
+      updateData.rd_Payment_Amount = payAmount;
+      updateData.rd_Payment_By = payMethod;
+      updateData.rd_Payment_to_Books = sendBooks;
+    }
+  }
+
+  try {
+    showToast("Updating operation...");
+    await ZOHO.CRM.API.updateRecord({
+      Entity: "Bills",
+      APIData: updateData,
+      Trigger: ["workflow"]
+    });
+
+    toggleModal("payModal", false);
+    showToast("Operation updated and synced with Zoho Books.");
+    setTimeout(async () => {
+      await fetchOperationsForDeal(dealId);
+      renderBookingsAccordion();
+    }, 2500);
+  } catch (err) {
+    console.error("Error updating Bill:", err);
+    showToast("Error updating operation.");
+  }
+}
