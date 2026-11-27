@@ -1,4 +1,4 @@
-// OPS Hub v2 — Fast Active/Upcoming Window, Chronological Sorting, Per-User Filters & Service Schedules
+// OPS Hub v2 — Unified Master Trip Plan + Operations, Single-Trip Sync & Clean Reference Modal
 const CHECKLIST_NOTE_TITLE = "[OPS_CHECKLIST]";
 const MANAGEMENT_PROFILES = ["administrator", "management"];
 const MANAGEMENT_ROLES = ["manager", "management", "ceo", "director"];
@@ -25,7 +25,8 @@ const STATE = {
   loadServicesDealId: null,
   loadServicesMode: "TEXT",
   parsedPreviewServices: [],
-  pendingChecklistItemId: null,
+  pendingChecklistItemIds: [],
+  selectedPlanItemsByDeal: {},
   editingOpRecord: null,
   operationsByDeal: {},
   opFullRecord: {},
@@ -141,6 +142,15 @@ function fmtDateDisplay(dateVal, fallback = "-") {
   });
 }
 
+function fmtShortDateNoYear(dateVal) {
+  const dt = parseDateSafe(dateVal);
+  if (!dt) return "";
+  return dt.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric"
+  });
+}
+
 function sortBookingsChronologically(list) {
   return [...list].sort((a, b) => {
     const da = parseDateSafe(a.Trip_Start_Date);
@@ -253,6 +263,16 @@ function escapeJsAttr(str) {
     .replace(/\r?\n/g, " ");
 }
 
+function sanitizeServiceTitle(rawName) {
+  if (!rawName) return "Service";
+  return String(rawName)
+    .replace(/\s*\|\s*[a-f0-9]{15,}\s*$/i, "")
+    .replace(/\s*\|\s*-\s*$/g, "")
+    .replace(/\s*\|\s*null\s*$/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim() || "Service";
+}
+
 function sanitizeNoteHtml(rawHtml) {
   if (!rawHtml) return "";
   try {
@@ -279,6 +299,34 @@ window.openDealInCrm = function (e, dealId) {
   if (e) e.stopPropagation();
   const url = `https://crm.zoho.com/crm/tab/Potentials/${dealId}`;
   window.open(url, "_blank", "noopener,noreferrer");
+};
+
+window.syncSingleTrip = async function (e, dealId) {
+  if (e) e.stopPropagation();
+  if (!dealId) return;
+
+  showToast("Syncing trip with Zoho CRM...");
+  delete STATE.operationsByDeal[dealId];
+  delete STATE.passengersByDeal[dealId];
+  delete STATE.notesByDeal[dealId];
+  delete STATE.attachmentsByDeal[dealId];
+  delete STATE.dealFullRecord[dealId];
+
+  renderBookingsAccordion();
+
+  await Promise.all([
+    fetchOperationsForDeal(dealId),
+    fetchPassengersForDeal(dealId),
+    fetchNotesForDeal(dealId),
+    fetchAttachmentsForDeal(dealId),
+    fetchFullDealRecord(dealId)
+  ]);
+
+  autoMatchChecklistWithOperations(dealId);
+  if (STATE.expandedBookingId === dealId) {
+    renderBookingsAccordion();
+  }
+  showToast("Trip data refreshed!");
 };
 
 window.downloadCrmAttachment = async function (e, dealId, attachmentId, fileName) {
@@ -345,13 +393,13 @@ function parseCleanProductDetails(rawText) {
 
     const parts = clean
       .split(/\s+•\s+/)
-      .map((p) => p.trim())
+      .map((p) => sanitizeServiceTitle(p))
       .filter(Boolean);
 
     if (parts.length > 1) {
       parts.forEach((part) => cleanedItems.push({ name: part, pax: paxInfo }));
     } else {
-      cleanedItems.push({ name: clean || "Service", pax: paxInfo });
+      cleanedItems.push({ name: sanitizeServiceTitle(clean || "Service"), pax: paxInfo });
     }
   });
 
@@ -360,12 +408,37 @@ function parseCleanProductDetails(rawText) {
   return { title: titles, meta: paxList, items: cleanedItems };
 }
 
+function getOperationDateColumnHtml(op) {
+  const fullOp = STATE.opFullRecord[op.id];
+  const subLines = fullOp && Array.isArray(fullOp.Product_Details) ? fullOp.Product_Details : [];
+
+  if (subLines.length > 1) {
+    const validDates = subLines
+      .map((r) => parseDateSafe(r.Trip_Start_Date))
+      .filter(Boolean)
+      .sort((a, b) => a.getTime() - b.getTime());
+
+    if (validDates.length >= 2) {
+      const first = validDates[0];
+      const last = validDates[validDates.length - 1];
+      if (first.getTime() !== last.getTime()) {
+        const rangeLabel = `${fmtShortDateNoYear(first)} – ${fmtDateDisplay(last)}`;
+        return `<strong>${escapeHtml(rangeLabel)}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "Syncing...")}</span>`;
+      }
+    }
+  }
+
+  const primaryDate = subLines[0]?.Trip_Start_Date || op.Bill_Date;
+  return `<strong>${escapeHtml(fmtDateDisplay(primaryDate, "-"))}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "Syncing...")}</span>`;
+}
+
 function renderOperationServicesCell(op) {
   const fullOp = STATE.opFullRecord[op.id];
   if (fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length > 0) {
+    const isMultiLine = fullOp.Product_Details.length > 1;
     const linesHtml = fullOp.Product_Details.map((row) => {
-      const prodName = row.Product_Name?.name || row.Product_Name || "Service";
-      const startDt = row.Trip_Start_Date ? fmtDateDisplay(row.Trip_Start_Date) : "";
+      const prodName = sanitizeServiceTitle(row.Product_Name?.name || row.Product_Name || "Service");
+      const startDt = isMultiLine && row.Trip_Start_Date ? fmtDateDisplay(row.Trip_Start_Date) : "";
       const startTime = (row.Start_Time || "").trim();
       const qty = row.Qty ? `${row.Qty} PAX` : "";
       const timeBadge = startTime
@@ -408,12 +481,26 @@ function renderOperationServicesCell(op) {
   return `${itemsHtml}${notesHtml}`;
 }
 
-function computeOperationsProgress(ops) {
-  if (!Array.isArray(ops) || !ops.length) {
+function buildOperationReferenceString(deal, op) {
+  if (op?.Xero_Bill_Name && String(op.Xero_Bill_Name).trim()) {
+    return String(op.Xero_Bill_Name).trim();
+  }
+  const clientName = deal?.Contact_Name?.name || deal?.Deal_Name || "Client";
+  const boNum = op?.Name || "BO-NEW";
+  const bkNum = deal?.Booking_Number || "";
+  return [clientName, boNum, bkNum].filter(Boolean).join(" | ");
+}
+
+function computeOperationsProgress(ops, dealId = null) {
+  const checklistItems = dealId ? (STATE.checklistByDeal[dealId]?.items || []) : [];
+  const pendingPlanItems = checklistItems.filter((it) => !it.done);
+
+  if ((!Array.isArray(ops) || !ops.length) && !pendingPlanItems.length) {
     return {
       opsCount: 0,
       activeOpsCount: 0,
       totalServices: 0,
+      pendingPlanCount: 0,
       confirmedServices: 0,
       paidServices: 0,
       cancelledServices: 0,
@@ -422,13 +509,13 @@ function computeOperationsProgress(ops) {
   }
 
   let activeOpsCount = 0;
-  let totalServices = 0;
+  let linkedServices = 0;
   let confirmedServices = 0;
   let paidServices = 0;
   let cancelledServices = 0;
   let weightedPoints = 0;
 
-  ops.forEach((op) => {
+  (ops || []).forEach((op) => {
     const fullOp = STATE.opFullRecord[op.id];
     const parsed = parseCleanProductDetails(op.Product_Deatails);
     const serviceCount = fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length
@@ -443,7 +530,7 @@ function computeOperationsProgress(ops) {
     }
 
     activeOpsCount++;
-    totalServices += serviceCount;
+    linkedServices += serviceCount;
 
     const isConfirmed =
       status === "Supplier Confirmed" ||
@@ -462,12 +549,17 @@ function computeOperationsProgress(ops) {
     }
   });
 
-  const percent = totalServices > 0 ? Math.round((weightedPoints / totalServices) * 100) : 0;
+  const totalDenominator = checklistItems.length > 0
+    ? Math.max(checklistItems.length, linkedServices + pendingPlanItems.length)
+    : linkedServices;
+
+  const percent = totalDenominator > 0 ? Math.round((weightedPoints / totalDenominator) * 100) : 0;
 
   return {
-    opsCount: ops.length,
+    opsCount: (ops || []).length,
     activeOpsCount,
-    totalServices,
+    totalServices: totalDenominator,
+    pendingPlanCount: pendingPlanItems.length,
     confirmedServices,
     paidServices,
     cancelledServices,
@@ -475,7 +567,7 @@ function computeOperationsProgress(ops) {
   };
 }
 
-// --- SERVICE CHECKLIST SERIALIZATION (Stored in [OPS_CHECKLIST] CRM Note) ---
+// --- SERVICE CHECKLIST / MASTER PLAN SERIALIZATION (Stored in [OPS_CHECKLIST] CRM Note) ---
 function serializeChecklistNote(items) {
   const header = "OPS Service Checklist (Managed by OPS Hub v2):";
   const lines = items.map((item) => {
@@ -607,10 +699,18 @@ function autoMatchChecklistWithOperations(dealId) {
 
   const opServiceTexts = [];
   ops.forEach((op) => {
-    const parsed = parseCleanProductDetails(op.Product_Deatails);
-    parsed.items.forEach((it) => {
-      if (it.name) opServiceTexts.push(it.name.toLowerCase());
-    });
+    const fullOp = STATE.opFullRecord[op.id];
+    if (fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length) {
+      fullOp.Product_Details.forEach((row) => {
+        const name = sanitizeServiceTitle(row.Product_Name?.name || row.Product_Name || "");
+        if (name) opServiceTexts.push(name.toLowerCase());
+      });
+    } else {
+      const parsed = parseCleanProductDetails(op.Product_Deatails);
+      parsed.items.forEach((it) => {
+        if (it.name) opServiceTexts.push(it.name.toLowerCase());
+      });
+    }
   });
 
   if (!opServiceTexts.length) return;
@@ -711,7 +811,6 @@ async function initApp() {
   populatePayModalAccounts();
   bindEvents();
 
-  // Fetch active users in parallel without blocking bookings render
   ZOHO.CRM.API.getAllUsers({ Type: "ActiveUsers" })
     .then((res) => {
       STATE.crmUsers = res?.users || [];
@@ -814,6 +913,7 @@ function bindEvents() {
   if ($("cancelLoadServices")) $("cancelLoadServices").onclick = () => toggleModal("loadServicesModal", false);
   if ($("btnModeText")) $("btnModeText").onclick = () => setLoadServicesMode("TEXT");
   if ($("btnModeCsv")) $("btnModeCsv").onclick = () => setLoadServicesMode("CSV");
+  if ($("btnDownloadServicesTemplate")) $("btnDownloadServicesTemplate").onclick = downloadServicesCsvTemplate;
   if ($("btnPreviewServices")) $("btnPreviewServices").onclick = previewParsedServices;
   if ($("servicesCsvFile")) $("servicesCsvFile").onchange = previewParsedServices;
   if ($("submitLoadServices")) $("submitLoadServices").onclick = submitLoadedServicesChecklist;
@@ -827,6 +927,12 @@ function bindEvents() {
   // Pay & Schedule Modal events
   if ($("closePayModal")) $("closePayModal").onclick = () => toggleModal("payModal", false);
   if ($("cancelPay")) $("cancelPay").onclick = () => toggleModal("payModal", false);
+  if ($("btnCopyPayRef")) {
+    $("btnCopyPayRef").onclick = (e) => {
+      const refText = $("payOpName")?.textContent || "";
+      window.copyText(e, refText, "Reference");
+    };
+  }
   if ($("payActionType")) {
     $("payActionType").onchange = (e) => {
       const val = e.target.value;
@@ -1094,9 +1200,11 @@ function renderBookingsAccordion() {
     ].join("");
 
     const loadedOps = STATE.operationsByDeal[b.id];
-    const progressHtml = Array.isArray(loadedOps) && loadedOps.length
+    const checklistItems = STATE.checklistByDeal[b.id]?.items || [];
+    const hasProgressData = (Array.isArray(loadedOps) && loadedOps.length > 0) || checklistItems.length > 0;
+    const progressHtml = hasProgressData
       ? (() => {
-          const prog = computeOperationsProgress(loadedOps);
+          const prog = computeOperationsProgress(loadedOps || [], b.id);
           const badgeCls = prog.percent === 100 ? "badge-ok" : (prog.percent > 0 ? "badge-info" : "badge-warn");
           return `<span class="badge ${badgeCls}">${prog.percent}% Ops (${prog.totalServices} svc)</span>`;
         })()
@@ -1222,7 +1330,7 @@ async function hydrateOperationsSubforms(opsList) {
   if (!Array.isArray(opsList) || !opsList.length) return;
   await Promise.all(
     opsList.map(async (op) => {
-      if (!op?.id) return;
+      if (!op?.id || String(op.id).startsWith("temp_")) return;
       try {
         const res = await ZOHO.CRM.API.getRecord({ Entity: "Bills", RecordID: op.id });
         if (res?.data?.[0]) {
@@ -1534,7 +1642,26 @@ window.copyAllManifest = function (e, dealId) {
   showToast(`Copied manifest for ${paxList.length} passenger(s)!`);
 };
 
-// --- LOAD SERVICES MODAL & CHECKLIST ACTIONS ---
+// --- LOAD SERVICES MODAL & UNIFIED PLAN SELECTION ---
+function downloadServicesCsvTemplate() {
+  const csvRows = [
+    "Date,Service,Note",
+    "2026-12-01,Arrival Transfer Airport to Hotel,Flight arrival 14:30",
+    "2026-12-02,Full Day Guided City & Ruins Tour,Include bilingual guide",
+    "2026-12-03,Shuttle Transfer to Next Destination,Morning departure 08:00"
+  ];
+  const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "Bamba_Trip_Services_Template.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  showToast("Downloaded CSV template for Sales!");
+}
+
 window.openLoadServicesModal = function (e, dealId) {
   if (e) e.stopPropagation();
   const b = STATE.dealFullRecord[dealId] || STATE.bookings.find((item) => item.id === dealId);
@@ -1703,41 +1830,55 @@ async function submitLoadedServicesChecklist() {
   const merged = append ? [...currentItems, ...newItems] : newItems;
 
   try {
-    showToast("Saving service checklist to Booking notes...");
+    showToast("Saving Trip Master Plan...");
     await persistChecklistToCrm(dealId, merged);
     autoMatchChecklistWithOperations(dealId);
 
-    if (!STATE.openSubDrawers[dealId]) {
-      STATE.openSubDrawers[dealId] = { passengers: false, notes: true };
-    } else {
-      STATE.openSubDrawers[dealId].notes = true;
-    }
-
     toggleModal("loadServicesModal", false);
     renderBookingsAccordion();
-    showToast(`Saved ${newItems.length} service(s) to checklist!`);
+    showToast(`Added ${newItems.length} service(s) to Trip Plan!`);
   } catch (err) {
     console.error("Error saving service checklist:", err);
-    showToast("Could not save service checklist.");
+    showToast("Could not save trip plan.");
   }
 }
 
-window.toggleChecklistItemDone = async function (dealId, itemId, checked) {
-  const entry = STATE.checklistByDeal[dealId];
-  if (!entry || !Array.isArray(entry.items)) return;
-
-  const target = entry.items.find((it) => it.id === itemId);
-  if (!target) return;
-  target.done = Boolean(checked);
-
-  renderBookingsAccordion();
-  try {
-    await persistChecklistToCrm(dealId, entry.items);
-    showToast(checked ? "Service marked as completed." : "Service marked as pending.");
-  } catch (err) {
-    console.error("Error updating checklist item:", err);
-    showToast("Could not sync checklist update.");
+window.toggleSelectPlanItem = function (e, dealId, itemId, isChecked) {
+  if (e) e.stopPropagation();
+  if (!STATE.selectedPlanItemsByDeal[dealId]) {
+    STATE.selectedPlanItemsByDeal[dealId] = new Set();
   }
+  if (isChecked) {
+    STATE.selectedPlanItemsByDeal[dealId].add(itemId);
+  } else {
+    STATE.selectedPlanItemsByDeal[dealId].delete(itemId);
+  }
+  renderBookingsAccordion();
+};
+
+window.clearSelectedPlanItems = function (e, dealId) {
+  if (e) e.stopPropagation();
+  delete STATE.selectedPlanItemsByDeal[dealId];
+  renderBookingsAccordion();
+};
+
+window.createOperationsFromSelectedPlan = function (e, dealId) {
+  if (e) e.stopPropagation();
+  const selectedSet = STATE.selectedPlanItemsByDeal[dealId];
+  const entry = STATE.checklistByDeal[dealId];
+  if (!selectedSet || !selectedSet.size || !entry?.items) return;
+
+  const chosenItems = entry.items.filter((it) => selectedSet.has(it.id) && !it.done);
+  if (!chosenItems.length) return;
+
+  STATE.pendingChecklistItemIds = chosenItems.map((it) => it.id);
+  openBulkModal(
+    dealId,
+    chosenItems.map((it) => ({
+      date: it.date,
+      serviceName: it.service
+    }))
+  );
 };
 
 window.removeChecklistItem = async function (e, dealId, itemId) {
@@ -1745,16 +1886,20 @@ window.removeChecklistItem = async function (e, dealId, itemId) {
   const entry = STATE.checklistByDeal[dealId];
   if (!entry || !Array.isArray(entry.items)) return;
 
+  if (STATE.selectedPlanItemsByDeal[dealId]) {
+    STATE.selectedPlanItemsByDeal[dealId].delete(itemId);
+  }
+
   const updated = entry.items.filter((it) => it.id !== itemId);
   entry.items = updated;
   renderBookingsAccordion();
 
   try {
     await persistChecklistToCrm(dealId, updated);
-    showToast("Service removed from checklist.");
+    showToast("Service removed from Trip Plan.");
   } catch (err) {
     console.error("Error removing checklist item:", err);
-    showToast("Could not sync checklist removal.");
+    showToast("Could not sync plan update.");
   }
 };
 
@@ -1764,11 +1909,13 @@ window.convertChecklistItemToOp = function (e, dealId, itemId) {
   const item = entry?.items?.find((it) => it.id === itemId);
   if (!item) return;
 
-  STATE.pendingChecklistItemId = itemId;
-  openBulkModal(dealId, {
-    date: item.date,
-    serviceName: item.service
-  });
+  STATE.pendingChecklistItemIds = [itemId];
+  openBulkModal(dealId, [
+    {
+      date: item.date,
+      serviceName: item.service
+    }
+  ]);
 };
 
 window.addBookingNote = async function (dealId) {
@@ -1800,6 +1947,8 @@ function renderExpandedBookingBody(b) {
   const pax = STATE.passengersByDeal[b.id];
   const notes = STATE.notesByDeal[b.id];
   const checklistItems = STATE.checklistByDeal[b.id]?.items || [];
+  const pendingPlanItems = checklistItems.filter((it) => !it.done);
+  const selectedPlanSet = STATE.selectedPlanItemsByDeal[b.id] || new Set();
   const dealAttachments = STATE.attachmentsByDeal[b.id] || [];
   const drawers = STATE.openSubDrawers[b.id] || { passengers: true, notes: false };
   const isEditingDeal = STATE.editingDealId === b.id;
@@ -1813,7 +1962,6 @@ function renderExpandedBookingBody(b) {
 
   const hasDesc = Boolean(full.Description && String(full.Description).trim());
   const notesCount = (Array.isArray(notes) ? notes.length : 0) + (hasDesc ? 1 : 0);
-  const doneChecklistCount = checklistItems.filter((it) => it.done).length;
 
   const currentOwnerId = full.Owner?.id || b.Owner?.id || "";
   const ownerOptions = STATE.crmUsers.length
@@ -1880,12 +2028,6 @@ function renderExpandedBookingBody(b) {
             📝 Notes (${notesCount})
           </button>
 
-          ${checklistItems.length > 0 ? `
-            <button type="button" class="badge ${doneChecklistCount === checklistItems.length ? "badge-ok" : "badge-info"}" style="cursor:pointer; border:none;" onclick="toggleSubDrawer('${b.id}', 'notes')">
-              ☑️ Checklist (${doneChecklistCount}/${checklistItems.length})
-            </button>
-          ` : ""}
-
           ${totalAttachmentsCount > 0 ? `
             <button type="button" class="badge badge-info" style="cursor:pointer; border:none;" onclick="toggleSubDrawer('${b.id}', 'notes')">
               📎 Attachments (${totalAttachmentsCount})
@@ -1909,6 +2051,7 @@ function renderExpandedBookingBody(b) {
           </select>
           ${!allowOwnerChange ? `<span class="badge">Locked</span>` : ""}
           ${!isEditingDeal ? `<button type="button" class="btn btn-secondary btn-sm" onclick="toggleEditSubheader(event, '${b.id}', true)">Edit Details</button>` : ""}
+          <button type="button" class="btn btn-secondary btn-sm" onclick="syncSingleTrip(event, '${b.id}')" title="Reload only this trip from Zoho CRM">↻ Sync Trip</button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="openLoadServicesModal(event, '${b.id}')">📋 Load Services</button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="openDealInCrm(event, '${b.id}')">Open in CRM ↗</button>
           <button class="btn btn-primary btn-sm" onclick="openBulkModal('${b.id}')">+ Add Operations</button>
@@ -2081,41 +2224,8 @@ function renderExpandedBookingBody(b) {
     </div>
   `;
 
-  // 3. NOTES, SERVICE CHECKLIST & ATTACHMENTS ACCORDION HTML
+  // 3. NOTES & ATTACHMENTS ACCORDION HTML (Clean — Master Service Plan moved to Operations Table)
   let notesListHtml = "";
-
-  if (checklistItems.length) {
-    const rowsHtml = checklistItems.map((it) => `
-      <div class="checklist-row ${it.done ? "checked" : ""}">
-        <div class="checklist-left">
-          <input type="checkbox" ${it.done ? "checked" : ""} onchange="toggleChecklistItemDone('${b.id}', '${it.id}', this.checked)" />
-          <div>
-            <div>
-              ${it.date ? `<span class="badge" style="margin-right:4px;">${escapeHtml(fmtDateDisplay(it.date))}</span>` : ""}
-              <strong class="checklist-service-name">${escapeHtml(it.service)}</strong>
-            </div>
-            ${it.note ? `<div class="product-clean-sub">${escapeHtml(it.note)}</div>` : ""}
-          </div>
-        </div>
-        <div class="checklist-actions">
-          ${!it.done ? `<button type="button" class="btn btn-primary btn-sm" onclick="convertChecklistItemToOp(event, '${b.id}', '${it.id}')">+ Add Op</button>` : `<span class="badge badge-ok">Linked</span>`}
-          <button type="button" class="btn-icon" title="Remove from checklist" onclick="removeChecklistItem(event, '${b.id}', '${it.id}')">✕</button>
-        </div>
-      </div>
-    `).join("");
-
-    notesListHtml += `
-      <div class="checklist-panel">
-        <div class="checklist-panel-header">
-          <div style="display:flex; align-items:center; gap:8px;">
-            <strong style="font-size:12px;">☑️ Trip Service Checklist (${doneChecklistCount}/${checklistItems.length})</strong>
-          </div>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="openLoadServicesModal(event, '${b.id}')">+ Import More</button>
-        </div>
-        <div class="checklist-items">${rowsHtml}</div>
-      </div>
-    `;
-  }
 
   if (dealAttachments.length) {
     const dealAttChips = dealAttachments.map((att) => `
@@ -2172,15 +2282,14 @@ function renderExpandedBookingBody(b) {
   }
 
   if (!notesListHtml) {
-    notesListHtml = `<div class="subtitle" style="margin-bottom:8px;">No notes or service checklist recorded for this Booking yet.</div>`;
+    notesListHtml = `<div class="subtitle" style="margin-bottom:8px;">No notes recorded for this Booking yet.</div>`;
   }
 
   const notesDrawerHtml = `
     <div class="inner-drawer">
       <div class="inner-drawer-header" onclick="toggleSubDrawer('${b.id}', 'notes')">
         <div style="display:flex; gap:8px; align-items:center;">
-          <span>📝 Booking Notes, Checklist &amp; Instructions (${notesCount})</span>
-          ${checklistItems.length > 0 ? `<span class="badge ${doneChecklistCount === checklistItems.length ? "badge-ok" : "badge-info"}">☑️ ${doneChecklistCount}/${checklistItems.length} Services</span>` : ""}
+          <span>📝 Booking Notes &amp; Instructions (${notesCount})</span>
           ${totalAttachmentsCount > 0 ? `<span class="badge badge-info">📎 ${totalAttachmentsCount} Attachment(s)</span>` : ""}
         </div>
         <span>${drawers.notes ? "▲" : "▼"}</span>
@@ -2197,14 +2306,16 @@ function renderExpandedBookingBody(b) {
     </div>
   `;
 
-  // 4. OPERATIONS TABLE HTML
-  const progress = computeOperationsProgress(ops);
-  let opsHeaderSummary = `<span>📋 Linked Operations (${Array.isArray(ops) ? ops.length : "..."})</span>`;
+  // 4. UNIFIED TRIP PLAN + LINKED OPERATIONS TABLE HTML
+  const progress = computeOperationsProgress(ops, b.id);
+  const hasAnyTableContent = (Array.isArray(ops) && ops.length > 0) || pendingPlanItems.length > 0;
+  let opsHeaderSummary = `<span>📋 Trip Operations &amp; Planned Services (${Array.isArray(ops) ? ops.length : "..."})</span>`;
 
-  if (Array.isArray(ops) && ops.length > 0) {
+  if (hasAnyTableContent) {
     const progBadgeCls = progress.percent === 100 ? "badge-ok" : (progress.percent > 0 ? "badge-info" : "badge-warn");
+    const pendingTag = progress.pendingPlanCount > 0 ? ` · ${progress.pendingPlanCount} unbooked` : "";
     opsHeaderSummary = `
-      <span>📋 Linked Operations (${progress.opsCount} ops · ${progress.totalServices} active service${progress.totalServices === 1 ? "" : "s"})</span>
+      <span>📋 Operations (${progress.opsCount} ops · ${progress.totalServices} total service${progress.totalServices === 1 ? "" : "s"}${pendingTag})</span>
       <div class="progress-pill-wrap">
         <span class="subtitle">${progress.confirmedServices}/${progress.totalServices} confirmed · ${progress.paidServices}/${progress.totalServices} paid</span>
         <div class="progress-track"><div class="progress-fill" style="width:${progress.percent}%;"></div></div>
@@ -2213,47 +2324,93 @@ function renderExpandedBookingBody(b) {
     `;
   }
 
+  const validSelectedCount = pendingPlanItems.filter((it) => selectedPlanSet.has(it.id)).length;
+  const selectionToolbarHtml = validSelectedCount > 0
+    ? `
+      <div class="plan-selection-bar">
+        <div>
+          <strong>${validSelectedCount} planned service${validSelectedCount === 1 ? "" : "s"} selected</strong>
+          <span class="subtitle"> — Group under one supplier (e.g., Marvelus) or assign individually</span>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="clearSelectedPlanItems(event, '${b.id}')">Clear</button>
+          <button type="button" class="btn btn-primary btn-sm" onclick="createOperationsFromSelectedPlan(event, '${b.id}')">+ Create Operation from Selected (${validSelectedCount})</button>
+        </div>
+      </div>
+    `
+    : "";
+
   let opsBodyHtml = `<div class="empty-state">Loading Booking operations...</div>`;
   if (Array.isArray(ops)) {
-    const opsRows = ops.length
-      ? ops.map((op) => {
-          const isConfirmed = op.Bill_Status === "Supplier Confirmed" || op.Bill_Status === "Traveler Confirmation Sent" || op.Bill_Status === "Trip Ended";
-          const resBadge = op.Bill_Status === "Cancelled" ? "badge-danger" : (isConfirmed ? "badge-ok" : "badge-warn");
-          const billPayBadge = op.Payment_Status === "Paid" ? "badge-ok" : (op.Payment_Status === "Programmed Payment" ? "badge-info" : "badge-warn");
+    const pendingRowsHtml = pendingPlanItems.map((it) => {
+      const isChecked = selectedPlanSet.has(it.id);
+      return `
+        <tr class="plan-pending-row">
+          <td>
+            <div style="display:flex; align-items:flex-start; gap:8px;">
+              <input type="checkbox" class="plan-chk" ${isChecked ? "checked" : ""} onchange="toggleSelectPlanItem(event, '${b.id}', '${it.id}', this.checked)" title="Select to group into an Operation" />
+              <div>
+                <strong>${escapeHtml(fmtDateDisplay(it.date, "No date"))}</strong><br/>
+                <span class="mono subtitle">Planned</span>
+              </div>
+            </div>
+          </td>
+          <td><span class="subtitle" style="font-style:italic;">Unassigned Supplier</span></td>
+          <td>
+            <div class="product-clean-title">${escapeHtml(it.service)}</div>
+            ${it.note ? `<div class="product-clean-sub">📝 ${escapeHtml(it.note)}</div>` : ""}
+          </td>
+          <td><span class="badge badge-danger">Not Booked</span></td>
+          <td><span class="subtitle">—</span></td>
+          <td style="white-space:nowrap;">
+            <button type="button" class="btn btn-primary btn-sm" onclick="convertChecklistItemToOp(event, '${b.id}', '${it.id}')">+ Book Op</button>
+            <button type="button" class="btn-icon" title="Remove planned item" onclick="removeChecklistItem(event, '${b.id}', '${it.id}')" style="margin-left:4px;">✕</button>
+          </td>
+        </tr>
+      `;
+    }).join("");
 
-          return `
+    const linkedOpsRowsHtml = ops.map((op) => {
+      const isConfirmed = op.Bill_Status === "Supplier Confirmed" || op.Bill_Status === "Traveler Confirmation Sent" || op.Bill_Status === "Trip Ended";
+      const resBadge = op.Bill_Status === "Cancelled" ? "badge-danger" : (isConfirmed ? "badge-ok" : "badge-warn");
+      const billPayBadge = op.Payment_Status === "Paid" ? "badge-ok" : (op.Payment_Status === "Programmed Payment" ? "badge-info" : "badge-warn");
+
+      return `
+        <tr>
+          <td>${getOperationDateColumnHtml(op)}</td>
+          <td><strong>${escapeHtml(op.Supplier_Vendor_Name?.name || "No Supplier")}</strong></td>
+          <td>${renderOperationServicesCell(op)}</td>
+          <td><span class="badge ${resBadge}">${escapeHtml(op.Bill_Status || "N/A")}</span></td>
+          <td>
+            <span class="badge ${billPayBadge}">${escapeHtml(op.Payment_Status || "Awaiting Payment")}</span>
+            ${op.Expected_Payment_Date ? `<div class="product-clean-sub">Due: ${escapeHtml(fmtDateDisplay(op.Expected_Payment_Date))}</div>` : ""}
+          </td>
+          <td>
+            <button class="btn btn-secondary btn-sm" onclick="openPayModal('${b.id}', '${op.id}')">Manage / Pay</button>
+          </td>
+        </tr>
+      `;
+    }).join("");
+
+    const allTableRows = `${pendingRowsHtml}${linkedOpsRowsHtml}`;
+    opsBodyHtml = allTableRows
+      ? `
+        ${selectionToolbarHtml}
+        <table>
+          <thead>
             <tr>
-              <td><strong>${escapeHtml(fmtDateDisplay(op.Bill_Date, "-"))}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "New")}</span></td>
-              <td><strong>${escapeHtml(op.Supplier_Vendor_Name?.name || "No Supplier")}</strong><br/><span class="mono subtitle">${escapeHtml(op.Xero_Bill_Name || "")}</span></td>
-              <td>${renderOperationServicesCell(op)}</td>
-              <td><span class="badge ${resBadge}">${escapeHtml(op.Bill_Status || "N/A")}</span></td>
-              <td>
-                <span class="badge ${billPayBadge}">${escapeHtml(op.Payment_Status || "Awaiting Payment")}</span>
-                ${op.Expected_Payment_Date ? `<div class="product-clean-sub">Due: ${escapeHtml(fmtDateDisplay(op.Expected_Payment_Date))}</div>` : ""}
-              </td>
-              <td>
-                <button class="btn btn-secondary btn-sm" onclick="openPayModal('${b.id}', '${op.id}')">Manage / Pay</button>
-              </td>
+              <th>Service Date / ID</th>
+              <th>Supplier</th>
+              <th>Service Details &amp; Schedules</th>
+              <th>Reservation Status</th>
+              <th>Payment Status</th>
+              <th>Action</th>
             </tr>
-          `;
-        }).join("")
-      : `<tr><td colspan="6" class="empty-state">This Booking has no Operations yet. Click "+ Add Operations" to create them.</td></tr>`;
-
-    opsBodyHtml = `
-      <table>
-        <thead>
-          <tr>
-            <th>Service Date / ID</th>
-            <th>Supplier / Ref</th>
-            <th>Service Details &amp; Schedules</th>
-            <th>Reservation Status</th>
-            <th>Payment Status</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody>${opsRows}</tbody>
-      </table>
-    `;
+          </thead>
+          <tbody>${allTableRows}</tbody>
+        </table>
+      `
+      : `<table><tbody><tr><td colspan="6" class="empty-state">This Booking has no Operations or Planned Services yet. Click "+ Add Operations" or "📋 Load Services".</td></tr></tbody></table>`;
   }
 
   const opsSectionHtml = `
@@ -2386,13 +2543,13 @@ async function ensureCatalogsLoaded() {
   return STATE.catalogsLoadingPromise;
 }
 
-window.openBulkModal = async function (dealId, prefill = null) {
+window.openBulkModal = async function (dealId, prefillList = null) {
   const targetId = dealId || STATE.expandedBookingId;
   const b = STATE.bookings.find((item) => item.id === targetId);
   if (!b) return;
 
-  if (!prefill) {
-    STATE.pendingChecklistItemId = null;
+  if (!prefillList) {
+    STATE.pendingChecklistItemIds = [];
   }
 
   STATE.expandedBookingId = b.id;
@@ -2401,7 +2558,12 @@ window.openBulkModal = async function (dealId, prefill = null) {
   toggleModal("bulkModal", true);
 
   await ensureCatalogsLoaded();
-  addBulkRow(prefill);
+
+  const itemsToAdd = Array.isArray(prefillList) && prefillList.length
+    ? prefillList
+    : (prefillList ? [prefillList] : [null]);
+
+  itemsToAdd.forEach((item) => addBulkRow(item));
 };
 
 function renderDatalistOptions(datalistEl, items, nameKey) {
@@ -2531,7 +2693,7 @@ function addBulkRow(prefill = null) {
           const exact = STATE.products.find((p) => (p.Product_Name || "").toLowerCase() === val.toLowerCase());
           if (exact) {
             pHidden.value = exact.id;
-            if (parseFloat(exact.Unit_Price) > 0) costInput.value = parseFloat(exact.Unit_Price).toFixed(2);
+            if (parseFloat(exact.Unit_Price) > 0) costInput.value = parseFloat(match.Unit_Price).toFixed(2);
           }
         }
       }, 300);
@@ -2549,13 +2711,15 @@ async function submitBulkOperations() {
   if (!rows.length) return;
 
   const isGroup = $("bulkIsGroup")?.checked || false;
-  const recordsToInsert = [];
+  const groupedMap = new Map();
 
   for (const r of rows) {
     const serviceDate = r.querySelector(".row-date").value;
     const serviceTime = (r.querySelector(".row-time")?.value || "").trim();
     const vendorId = r.querySelector(".row-vendor").value;
+    const vendorName = r.querySelector(".row-vendor-input").value.trim();
     const productId = r.querySelector(".row-product").value;
+    const productName = r.querySelector(".row-product-input").value.trim();
     const pax = parseInt(r.querySelector(".row-pax").value, 10) || 1;
     const costPerPerson = parseFloat(r.querySelector(".row-cost").value) || 0;
     const payFlow = r.querySelector(".row-payflow").value;
@@ -2576,56 +2740,109 @@ async function submitBulkOperations() {
     };
     if (serviceTime) productRow.Start_Time = serviceTime;
 
-    const payload = {
-      Booking_Name: b.id,
-      Booking_Number: String(b.Booking_Number || ""),
-      Sales_Platform: b.Sales_Platform || "Bamba Travel",
-      Supplier_Vendor_Name: vendorId,
-      Bill_Date: serviceDate,
-      Bill_Status: "Supplier Confirmation Awaited",
-      Payment_Status: "Awaiting Payment",
-      Group_Departure_Operation: isGroup,
-      Passenger_Details: b.Contact_Name?.name || "",
-      Accommodation_Pick_up_Point: b.Accommodation_Pick_up_Point || "",
-      Flight_Details: b.Flight_Details || "",
-      Product_Details: [productRow]
-    };
+    // Group rows with the same Supplier + Payment Flow into a single Purchase Order (e.g., Marvelus)
+    const groupKey = `${vendorId}__${payFlow}__${payDate}__${payMethod}`;
+    if (!groupedMap.has(groupKey)) {
+      const payload = {
+        Booking_Name: b.id,
+        Booking_Number: String(b.Booking_Number || ""),
+        Sales_Platform: b.Sales_Platform || "Bamba Travel",
+        Supplier_Vendor_Name: vendorId,
+        Bill_Date: serviceDate,
+        Bill_Status: "Supplier Confirmation Awaited",
+        Payment_Status: "Awaiting Payment",
+        Group_Departure_Operation: isGroup,
+        Passenger_Details: b.Contact_Name?.name || "",
+        Accommodation_Pick_up_Point: b.Accommodation_Pick_up_Point || "",
+        Flight_Details: b.Flight_Details || "",
+        Product_Details: [productRow],
+        _meta: {
+          vendorName,
+          serviceLabels: [productName],
+          totalCost: totalRowCost
+        }
+      };
 
-    if (payFlow === "SCHEDULED" && payDate) {
-      payload.Expected_Payment_Date = payDate;
-    } else if (payFlow === "PAID_NOW" && payDate) {
-      payload.st_Payment_Date = payDate;
-      payload.st_Payment_Amount = totalRowCost;
-      payload.st_Payment_platform = payMethod;
-      if (STATE.currentUser?.id) payload.Payment_By = STATE.currentUser.id;
-      payload.st_Payment_to_Books = true;
+      if (payFlow === "SCHEDULED" && payDate) {
+        payload.Expected_Payment_Date = payDate;
+      } else if (payFlow === "PAID_NOW" && payDate) {
+        payload.st_Payment_Date = payDate;
+        payload.st_Payment_Amount = totalRowCost;
+        payload.st_Payment_platform = payMethod;
+        if (STATE.currentUser?.id) payload.Payment_By = STATE.currentUser.id;
+        payload.st_Payment_to_Books = true;
+      }
+
+      groupedMap.set(groupKey, payload);
+    } else {
+      const existing = groupedMap.get(groupKey);
+      existing.Product_Details.push(productRow);
+      existing._meta.serviceLabels.push(productName);
+      existing._meta.totalCost += totalRowCost;
+      if (serviceDate < existing.Bill_Date) {
+        existing.Bill_Date = serviceDate;
+      }
+      if (payFlow === "PAID_NOW" && payDate) {
+        existing.st_Payment_Amount = existing._meta.totalCost;
+      }
     }
-
-    recordsToInsert.push(payload);
   }
+
+  const groupedEntries = Array.from(groupedMap.values());
+  const recordsToInsert = groupedEntries.map(({ _meta, ...apiPayload }) => apiPayload);
 
   try {
     showToast("Creating operations in Zoho CRM...");
-    await ZOHO.CRM.API.insertRecord({
+    const insertRes = await ZOHO.CRM.API.insertRecord({
       Entity: "Bills",
       APIData: recordsToInsert,
       Trigger: ["workflow"]
     });
 
-    if (STATE.pendingChecklistItemId && STATE.checklistByDeal[b.id]?.items) {
-      const targetItem = STATE.checklistByDeal[b.id].items.find((it) => it.id === STATE.pendingChecklistItemId);
-      if (targetItem) {
-        targetItem.done = true;
-        await persistChecklistToCrm(b.id, STATE.checklistByDeal[b.id].items);
-      }
-      STATE.pendingChecklistItemId = null;
+    // Optimistic insertion so the new Operation appears immediately while Zoho indexes it
+    if (!Array.isArray(STATE.operationsByDeal[b.id])) {
+      STATE.operationsByDeal[b.id] = [];
     }
+    const createdResults = Array.isArray(insertRes?.data) ? insertRes.data : [];
+    groupedEntries.forEach((entry, idx) => {
+      const newId = createdResults[idx]?.details?.id || `temp_${Date.now()}_${idx}`;
+      const optimisticOp = {
+        id: newId,
+        Name: "Syncing BO...",
+        Bill_Date: entry.Bill_Date,
+        Supplier_Vendor_Name: { id: entry.Supplier_Vendor_Name, name: entry._meta.vendorName },
+        Product_Deatails: entry._meta.serviceLabels.join(" • "),
+        Bill_Status: entry.Bill_Status,
+        Payment_Status: entry.st_Payment_to_Books ? "Paid" : (entry.Expected_Payment_Date ? "Programmed Payment" : "Awaiting Payment"),
+        Expected_Payment_Date: entry.Expected_Payment_Date || null,
+        Grand_Total: entry._meta.totalCost
+      };
+      STATE.operationsByDeal[b.id].unshift(optimisticOp);
+
+      if (!String(newId).startsWith("temp_")) {
+        STATE.opFullRecord[newId] = {
+          ...optimisticOp,
+          Product_Details: entry.Product_Details.map((pd, pIdx) => ({
+            ...pd,
+            Product_Name: { id: pd.Product_Name, name: entry._meta.serviceLabels[pIdx] || "Service" }
+          }))
+        };
+      }
+    });
+
+    if (STATE.pendingChecklistItemIds.length && STATE.checklistByDeal[b.id]?.items) {
+      const idSet = new Set(STATE.pendingChecklistItemIds);
+      STATE.checklistByDeal[b.id].items.forEach((it) => {
+        if (idSet.has(it.id)) it.done = true;
+      });
+      await persistChecklistToCrm(b.id, STATE.checklistByDeal[b.id].items);
+      STATE.pendingChecklistItemIds = [];
+    }
+    delete STATE.selectedPlanItemsByDeal[b.id];
 
     toggleModal("bulkModal", false);
-    showToast(`${recordsToInsert.length} operation(s) created successfully!`);
-    await fetchOperationsForDeal(b.id);
-    autoMatchChecklistWithOperations(b.id);
     renderBookingsAccordion();
+    showToast(`${recordsToInsert.length} operation(s) created! Use "↻ Sync Trip" in a few seconds to fetch BO numbers.`);
   } catch (err) {
     console.error("Error inserting into Bills:", err);
     showToast("Error creating operations. Check browser console for details.");
@@ -2644,7 +2861,7 @@ function renderOpServicesEditor(fullOp) {
   }
 
   const rowsHtml = lines.map((line, idx) => {
-    const prodName = line.Product_Name?.name || line.Product_Name || "Service";
+    const prodName = sanitizeServiceTitle(line.Product_Name?.name || line.Product_Name || "Service");
     const startIso = toIsoDateInput(line.Trip_Start_Date);
     const startTime = line.Start_Time || "";
     const qty = line.Qty ?? 1;
@@ -2679,12 +2896,13 @@ function renderOpServicesEditor(fullOp) {
 
 window.openPayModal = async function (dealId, opId) {
   STATE.expandedBookingId = dealId;
+  const deal = STATE.dealFullRecord[dealId] || STATE.bookings.find((b) => b.id === dealId);
   const ops = STATE.operationsByDeal[dealId] || [];
   const op = ops.find((o) => o.id === opId);
   if (!op) return;
 
   if ($("payOpId")) $("payOpId").value = op.id;
-  if ($("payOpName")) $("payOpName").textContent = op.Name || "Operation";
+  if ($("payOpName")) $("payOpName").textContent = buildOperationReferenceString(deal, op);
   if ($("payResStatus")) $("payResStatus").value = op.Bill_Status || "Supplier Confirmation Awaited";
   if ($("payActionType")) $("payActionType").value = "NONE";
   $("scheduledFields")?.classList.add("hidden");
@@ -2702,7 +2920,7 @@ window.openPayModal = async function (dealId, opId) {
   toggleModal("payModal", true);
 
   let fullOp = STATE.opFullRecord[opId];
-  if (!fullOp) {
+  if (!fullOp && !String(opId).startsWith("temp_")) {
     try {
       const res = await ZOHO.CRM.API.getRecord({ Entity: "Bills", RecordID: opId });
       if (res?.data?.[0]) {
@@ -2715,6 +2933,9 @@ window.openPayModal = async function (dealId, opId) {
   }
 
   STATE.editingOpRecord = fullOp || op;
+  if ($("payOpName")) {
+    $("payOpName").textContent = buildOperationReferenceString(deal, STATE.editingOpRecord);
+  }
   if ($("payDetailsNotes")) {
     $("payDetailsNotes").value = (fullOp?.Details_of_Product ?? op.Details_of_Product) || "";
   }
@@ -2800,14 +3021,24 @@ async function submitOperationUpdate() {
       Trigger: ["workflow"]
     });
 
+    // Update local memory immediately so UI reflects edits without waiting for CRM search index
+    const localOp = ops.find((o) => o.id === opId);
+    if (localOp) {
+      localOp.Bill_Status = resStatus;
+      localOp.Details_of_Product = detailsNotes;
+      if (actionType === "SCHEDULED") {
+        localOp.Expected_Payment_Date = updateData.Expected_Payment_Date;
+        localOp.Payment_Status = "Programmed Payment";
+      } else if (actionType === "PAID_NOW" && $("paySendBooks")?.checked) {
+        localOp.Payment_Status = "Paid";
+      }
+    }
+
     delete STATE.opFullRecord[opId];
     STATE.editingOpRecord = null;
     toggleModal("payModal", false);
-    showToast("Operation updated and synced with Zoho CRM.");
-    setTimeout(async () => {
-      await fetchOperationsForDeal(dealId);
-      renderBookingsAccordion();
-    }, 1500);
+    renderBookingsAccordion();
+    showToast("Operation updated! Use '↻ Sync Trip' if Zoho workflow fields are still propagating.");
   } catch (err) {
     console.error("Error updating Bill:", err);
     showToast("Error updating operation.");
