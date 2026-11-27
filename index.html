@@ -49,6 +49,11 @@
         <option value="NEXT_MONTH">Next Month</option>
       </select>
 
+      <div class="date-filter-wrap" title="Initial query start date (default Nov 1, 2026)">
+        <label for="filterSinceDate" class="subtitle" style="font-weight:600; white-space:nowrap;">Trips From:</label>
+        <input type="date" id="filterSinceDate" value="2026-11-01" />
+      </div>
+
       <input type="text" id="searchInput" placeholder="Search Booking #, client, or name..." />
       <button id="btnRefresh" class="btn btn-secondary">↻ Refresh</button>
     </div>
@@ -67,7 +72,7 @@
       <div class="list-summary-bar">
         <div>
           <h2>Active Bookings (<span id="bookingsCount">0</span>)</h2>
-          <p class="subtitle">Click any booking row to expand its passengers, notes, attachments, and operations.</p>
+          <p class="subtitle">Click any booking row to expand its passengers, service checklist, notes, attachments, and operations.</p>
         </div>
         <div id="ownerWorkloadBar" class="workload-pills"></div>
       </div>
@@ -106,6 +111,62 @@
       </div>
     </section>
   </main>
+
+  <!-- MODAL LOAD SERVICES (TEXT LIST OR CSV) -->
+  <div id="loadServicesModal" class="modal hidden">
+    <div class="modal-content modal-md">
+      <div class="modal-header">
+        <h3>Load Services Checklist — <span id="loadServicesBookingLabel"></span></h3>
+        <button type="button" id="closeLoadServicesModal" class="btn-icon">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">
+          Import the trip's service list as a checklist stored inside the Booking's Notes. Expected columns: <strong>Date, Service, Note</strong> (date and note are optional).
+        </p>
+
+        <div class="mode-switch">
+          <button type="button" class="btn btn-primary btn-sm" id="btnModeText">Paste Text / List</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnModeCsv">Upload CSV</button>
+        </div>
+
+        <div id="modeTextBox" class="form-group">
+          <label for="servicesTextInput">Paste services (one per line: <code>Date, Service, Note</code> or just <code>Service</code>)</label>
+          <textarea id="servicesTextInput" rows="7" placeholder="2026-11-30, Antigua to Lanquin, Morning shuttle&#10;2026-12-01, Semuc Champey & Kanba Caves Tour, Include lunch&#10;2026-12-02, Lanquin to Flores"></textarea>
+        </div>
+
+        <div id="modeCsvBox" class="form-group hidden">
+          <label for="servicesCsvFile">Select CSV file (columns: <code>Date, Service, Note</code>)</label>
+          <input type="file" id="servicesCsvFile" accept=".csv,text/csv" />
+          <p class="subtitle" style="margin-top:4px;">Supports comma or semicolon delimiters, with or without header row.</p>
+        </div>
+
+        <div class="bulk-toolbar" style="margin-top:8px;">
+          <button type="button" id="btnPreviewServices" class="btn btn-secondary btn-sm">Preview Parsed Services</button>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="appendServicesChk" checked />
+            <span>Append to existing checklist (uncheck to replace)</span>
+          </label>
+        </div>
+
+        <div id="servicesPreviewBox" class="table-wrapper hidden" style="margin-top:10px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Service</th>
+                <th>Note</th>
+              </tr>
+            </thead>
+            <tbody id="servicesPreviewTbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="cancelLoadServices" class="btn btn-secondary">Cancel</button>
+        <button type="button" id="submitLoadServices" class="btn btn-primary">Save Services Checklist</button>
+      </div>
+    </div>
+  </div>
 
   <!-- MODAL BULK CREATE OPERATIONS -->
   <div id="bulkModal" class="modal hidden">
