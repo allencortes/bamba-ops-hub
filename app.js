@@ -1,9 +1,10 @@
-// OPS Hub v2 — Step 4 (Per-User Filters, Date Range From/To, Editable Operations_Stage, Dual Pax Phones & Operation Service Schedules)
-const DEFAULT_START_DATE = "2026-11-01";
+// OPS Hub v2 — Fast Active/Upcoming Window, Chronological Sorting, Per-User Filters & Service Schedules
 const CHECKLIST_NOTE_TITLE = "[OPS_CHECKLIST]";
 const MANAGEMENT_PROFILES = ["administrator", "management"];
 const MANAGEMENT_ROLES = ["manager", "management", "ceo", "director"];
 const MANAGEMENT_EMAILS = ["allen@bambatravel.com"];
+const CATALOG_CACHE_KEY = "ops_hub_catalogs_v1";
+const CATALOG_TTL_MS = 12 * 60 * 60 * 1000;
 
 const OPERATIONS_STAGES = [
   "Nothing is booked",
@@ -37,9 +38,12 @@ const STATE = {
   crmUsers: [],
   vendors: [],
   products: [],
+  catalogsLoaded: false,
+  catalogsLoadingPromise: null,
   currentUser: null,
   activeTab: "operations",
-  booted: false
+  booted: false,
+  loadGeneration: 0
 };
 
 const BOOKS_ACCOUNTS = [
@@ -116,6 +120,17 @@ function toIsoDateInput(dateVal) {
   return `${y}-${m}-${d}`;
 }
 
+function getDefaultDateWindow() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const fromDt = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 15);
+  const toDt = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 60);
+  return {
+    fromIso: toIsoDateInput(fromDt),
+    toIso: toIsoDateInput(toDt)
+  };
+}
+
 function fmtDateDisplay(dateVal, fallback = "-") {
   const dt = parseDateSafe(dateVal);
   if (!dt) return fallback;
@@ -123,6 +138,17 @@ function fmtDateDisplay(dateVal, fallback = "-") {
     month: "short",
     day: "numeric",
     year: "numeric"
+  });
+}
+
+function sortBookingsChronologically(list) {
+  return [...list].sort((a, b) => {
+    const da = parseDateSafe(a.Trip_Start_Date);
+    const db = parseDateSafe(b.Trip_Start_Date);
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    return da.getTime() - db.getTime();
   });
 }
 
@@ -138,7 +164,7 @@ function saveUserFilterPrefs() {
       platform: $("filterPlatform")?.value || "ALL",
       owner: $("filterOwner")?.value || "ALL",
       startDateWin: $("filterStartDate")?.value || "ALL",
-      sinceDate: $("filterSinceDate")?.value || DEFAULT_START_DATE,
+      sinceDate: $("filterSinceDate")?.value || "",
       toDate: $("filterToDate")?.value || ""
     };
     localStorage.setItem(getUserFilterStorageKey(), JSON.stringify(prefs));
@@ -169,7 +195,7 @@ function applySavedFilterPrefs(prefs) {
       $("filterStartDate").value = prefs.startDateWin;
     }
   }
-  if ($("filterSinceDate") && prefs.sinceDate) {
+  if ($("filterSinceDate") && typeof prefs.sinceDate === "string") {
     $("filterSinceDate").value = prefs.sinceDate;
   }
   if ($("filterToDate") && typeof prefs.toDate === "string") {
@@ -183,15 +209,16 @@ function resetAllFilters() {
   } catch (e) {
     // ignore
   }
+  const defWin = getDefaultDateWindow();
   if ($("filterStage")) $("filterStage").value = "Booking Won";
   if ($("filterPlatform")) $("filterPlatform").value = "ALL";
   if ($("filterOwner")) $("filterOwner").value = "ALL";
   if ($("filterStartDate")) $("filterStartDate").value = "ALL";
-  if ($("filterSinceDate")) $("filterSinceDate").value = DEFAULT_START_DATE;
-  if ($("filterToDate")) $("filterToDate").value = "";
+  if ($("filterSinceDate")) $("filterSinceDate").value = defWin.fromIso;
+  if ($("filterToDate")) $("filterToDate").value = defWin.toIso;
   if ($("searchInput")) $("searchInput").value = "";
   loadBookings();
-  showToast("Filters reset to default.");
+  showToast("Reset to active & upcoming trips window.");
 }
 
 function canManageOwner() {
@@ -669,23 +696,30 @@ if (document.readyState === "loading") {
 }
 
 async function initApp() {
-  try {
-    const usersListRes = await ZOHO.CRM.API.getAllUsers({ Type: "ActiveUsers" });
-    STATE.crmUsers = usersListRes?.users || [];
-  } catch (e) {
-    console.warn("Could not fetch CRM users", e);
-  }
-
+  const defWin = getDefaultDateWindow();
   if ($("filterSinceDate") && !$("filterSinceDate").value) {
-    $("filterSinceDate").value = DEFAULT_START_DATE;
+    $("filterSinceDate").value = defWin.fromIso;
+  }
+  if ($("filterToDate") && !$("filterToDate").value) {
+    $("filterToDate").value = defWin.toIso;
   }
 
   const savedPrefs = loadUserFilterPrefs();
   applySavedFilterPrefs(savedPrefs);
+  restoreCachedCatalogs();
 
   populatePayModalAccounts();
   bindEvents();
-  await Promise.all([loadBookings(savedPrefs?.owner || "ALL"), loadVendorsAndProducts()]);
+
+  // Fetch active users in parallel without blocking bookings render
+  ZOHO.CRM.API.getAllUsers({ Type: "ActiveUsers" })
+    .then((res) => {
+      STATE.crmUsers = res?.users || [];
+      if (STATE.expandedBookingId) renderBookingsAccordion();
+    })
+    .catch((e) => console.warn("Could not fetch CRM users", e));
+
+  await loadBookings(savedPrefs?.owner || "ALL");
 }
 
 function populatePayModalAccounts() {
@@ -710,7 +744,7 @@ function bindEvents() {
   if ($("filterToDate")) {
     $("filterToDate").addEventListener("change", () => {
       saveUserFilterPrefs();
-      applyFilters();
+      loadBookings();
     });
   }
   if ($("filterPlatform")) {
@@ -743,7 +777,7 @@ function bindEvents() {
         if (term.length >= 3 && STATE.filteredBookings.length === 0) {
           await searchHistoricalBookings(term);
         }
-      }, 500);
+      }, 450);
     });
   }
   if ($("btnRefresh")) {
@@ -808,12 +842,39 @@ function toggleModal(id, show) {
   if (el) el.classList.toggle("hidden", !show);
 }
 
-async function fetchPaginatedDeals(criteriaQuery) {
-  let all = [];
+function buildDealsCriteria(stage, sinceDate, toDate) {
+  const parts = [`(Stage:equals:${stage})`];
+
+  if (sinceDate) {
+    const cutoffDt = parseDateSafe(sinceDate);
+    const dayBeforeDt = cutoffDt
+      ? new Date(cutoffDt.getFullYear(), cutoffDt.getMonth(), cutoffDt.getDate() - 1)
+      : null;
+    const dayBeforeIso = dayBeforeDt ? toIsoDateInput(dayBeforeDt) : sinceDate;
+    parts.push(`(Trip_Start_Date:greater_than:${dayBeforeIso})`);
+  }
+
+  if (toDate) {
+    const endDt = parseDateSafe(toDate);
+    const dayAfterDt = endDt
+      ? new Date(endDt.getFullYear(), endDt.getMonth(), endDt.getDate() + 1)
+      : null;
+    const dayAfterIso = dayAfterDt ? toIsoDateInput(dayAfterDt) : toDate;
+    parts.push(`(Trip_Start_Date:less_than:${dayAfterIso})`);
+  }
+
+  if (parts.length === 1) return parts[0];
+  return `(${parts.join("and")})`;
+}
+
+async function fetchPaginatedDealsProgressive(criteriaQuery, generationId, preferredOwnerId) {
+  const map = new Map();
   let page = 1;
   let moreRecords = true;
 
-  while (moreRecords && page <= 15) {
+  while (moreRecords && page <= 12) {
+    if (generationId !== STATE.loadGeneration) return;
+
     const res = await ZOHO.CRM.API.searchRecord({
       Entity: "Deals",
       Type: "criteria",
@@ -821,55 +882,45 @@ async function fetchPaginatedDeals(criteriaQuery) {
       page,
       per_page: 200
     });
+
+    if (generationId !== STATE.loadGeneration) return;
+
     const batch = Array.isArray(res?.data) ? res.data : [];
-    all = all.concat(batch);
+    batch.forEach((r) => {
+      if (r && r.id) map.set(r.id, r);
+    });
+
+    STATE.bookings = sortBookingsChronologically(Array.from(map.values()));
+    buildOwnerFilterOptions(page === 1 ? preferredOwnerId : null);
+    applyFilters();
+
     moreRecords = Boolean(res?.info?.more_records) && batch.length > 0;
     page++;
   }
-
-  return all;
 }
 
 async function loadBookings(preferredOwnerId = null) {
+  const generationId = ++STATE.loadGeneration;
   const accordion = $("bookingsAccordion");
   if (accordion) accordion.innerHTML = `<div class="empty-state">Loading Bookings...</div>`;
 
   const stage = $("filterStage")?.value || "Booking Won";
-  const sinceDate = $("filterSinceDate")?.value || DEFAULT_START_DATE;
+  const sinceDate = $("filterSinceDate")?.value || "";
+  const toDate = $("filterToDate")?.value || "";
 
   try {
-    let rows = [];
-    if (sinceDate) {
-      const cutoffDt = parseDateSafe(sinceDate);
-      const dayBeforeDt = cutoffDt ? new Date(cutoffDt.getFullYear(), cutoffDt.getMonth(), cutoffDt.getDate() - 1) : null;
-      const dayBeforeIso = dayBeforeDt ? toIsoDateInput(dayBeforeDt) : sinceDate;
-      const criteriaWithDate = `((Stage:equals:${stage})and(Trip_Start_Date:greater_than:${dayBeforeIso}))`;
-
-      try {
-        rows = await fetchPaginatedDeals(criteriaWithDate);
-      } catch (criteriaErr) {
-        console.warn("Date criteria fallback to stage + client filter:", criteriaErr);
-        const stageRows = await fetchPaginatedDeals(`(Stage:equals:${stage})`);
-        rows = stageRows.filter((b) => {
-          const startDt = parseDateSafe(b.Trip_Start_Date);
-          return cutoffDt && startDt && startDt >= cutoffDt;
-        });
-      }
-    } else {
-      rows = await fetchPaginatedDeals(`(Stage:equals:${stage})`);
+    const criteriaWithDates = buildDealsCriteria(stage, sinceDate, toDate);
+    try {
+      await fetchPaginatedDealsProgressive(criteriaWithDates, generationId, preferredOwnerId);
+    } catch (criteriaErr) {
+      console.warn("Date criteria fallback to stage query:", criteriaErr);
+      await fetchPaginatedDealsProgressive(`(Stage:equals:${stage})`, generationId, preferredOwnerId);
     }
-
-    const map = new Map();
-    rows.forEach((r) => {
-      if (r && r.id) map.set(r.id, r);
-    });
-    STATE.bookings = Array.from(map.values());
-
-    buildOwnerFilterOptions(preferredOwnerId);
-    applyFilters();
   } catch (err) {
     console.error("Error loading Deals:", err);
-    if (accordion) accordion.innerHTML = `<div class="empty-state">No records found or query error.</div>`;
+    if (accordion && generationId === STATE.loadGeneration) {
+      accordion.innerHTML = `<div class="empty-state">No records found or query error.</div>`;
+    }
   }
 }
 
@@ -903,8 +954,9 @@ async function searchHistoricalBookings(term) {
     });
 
     if (added > 0) {
+      STATE.bookings = sortBookingsChronologically(STATE.bookings);
       buildOwnerFilterOptions();
-      applyFilters();
+      applyFilters(true);
       showToast(`Found ${added} matching Booking(s) from CRM archive.`);
     }
   } catch (e) {
@@ -968,7 +1020,7 @@ function matchesDateRange(dateStr, fromIso, toIso) {
   return true;
 }
 
-function applyFilters() {
+function applyFilters(ignoreDateRangeForArchiveSearch = false) {
   const platform = $("filterPlatform")?.value || "ALL";
   const owner = $("filterOwner")?.value || "ALL";
   const startWin = $("filterStartDate")?.value || "ALL";
@@ -981,7 +1033,7 @@ function applyFilters() {
     const bOwnerId = b.Owner?.id || "UNASSIGNED";
     const matchOwner = owner === "ALL" || bOwnerId === owner;
     const matchDateWin = matchesStartDateWindow(b.Trip_Start_Date, startWin);
-    const matchRange = matchesDateRange(b.Trip_Start_Date, fromIso, toIso);
+    const matchRange = ignoreDateRangeForArchiveSearch ? true : matchesDateRange(b.Trip_Start_Date, fromIso, toIso);
     const text = `${b.Booking_Number || ""} ${b.Deal_Name || ""} ${b.Contact_Name?.name || ""} ${b.Owner?.name || ""}`.toLowerCase();
     return matchPlat && matchOwner && matchDateWin && matchRange && text.includes(q);
   });
@@ -1023,7 +1075,7 @@ function renderBookingsAccordion() {
   if (!accordion) return;
 
   if (!STATE.filteredBookings.length) {
-    accordion.innerHTML = `<div class="empty-state">No Bookings match these filters.</div>`;
+    accordion.innerHTML = `<div class="empty-state">No Bookings match these filters. Adjust Trips From / To or type a Booking # in search.</div>`;
     return;
   }
 
@@ -2287,22 +2339,54 @@ async function liveSearchCatalog(entityName, term) {
   }
 }
 
-async function loadVendorsAndProducts() {
+function restoreCachedCatalogs() {
   try {
-    const [vRes, pRes] = await Promise.all([
-      ZOHO.CRM.API.getAllRecords({ Entity: "Vendors", page: 1, per_page: 200 }),
-      ZOHO.CRM.API.getAllRecords({ Entity: "Products", page: 1, per_page: 200 })
-    ]);
-    STATE.vendors = vRes?.data || [];
-    STATE.products = pRes?.data || [];
-    STATE.vendors.sort((a, b) => (a.Vendor_Name || "").localeCompare(b.Vendor_Name || ""));
-    STATE.products.sort((a, b) => (a.Product_Name || "").localeCompare(b.Product_Name || ""));
+    const raw = localStorage.getItem(CATALOG_CACHE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && Date.now() - (parsed.ts || 0) < CATALOG_TTL_MS) {
+      STATE.vendors = parsed.vendors || [];
+      STATE.products = parsed.products || [];
+      STATE.catalogsLoaded = STATE.vendors.length > 0 || STATE.products.length > 0;
+    }
   } catch (e) {
-    console.warn("Error loading catalogs:", e);
+    // ignore
   }
 }
 
-window.openBulkModal = function (dealId, prefill = null) {
+async function ensureCatalogsLoaded() {
+  if (STATE.catalogsLoaded) return;
+  if (STATE.catalogsLoadingPromise) return STATE.catalogsLoadingPromise;
+
+  STATE.catalogsLoadingPromise = (async () => {
+    try {
+      const [vRes, pRes] = await Promise.all([
+        ZOHO.CRM.API.getAllRecords({ Entity: "Vendors", page: 1, per_page: 200 }),
+        ZOHO.CRM.API.getAllRecords({ Entity: "Products", page: 1, per_page: 200 })
+      ]);
+      STATE.vendors = (vRes?.data || []).sort((a, b) => (a.Vendor_Name || "").localeCompare(b.Vendor_Name || ""));
+      STATE.products = (pRes?.data || []).sort((a, b) => (a.Product_Name || "").localeCompare(b.Product_Name || ""));
+      STATE.catalogsLoaded = true;
+      try {
+        localStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify({
+          ts: Date.now(),
+          vendors: STATE.vendors,
+          products: STATE.products
+        }));
+      } catch (e) {
+        // ignore storage quota
+      }
+    } catch (e) {
+      console.warn("Error loading catalogs:", e);
+    } finally {
+      STATE.catalogsLoadingPromise = null;
+    }
+  })();
+
+  return STATE.catalogsLoadingPromise;
+}
+
+window.openBulkModal = async function (dealId, prefill = null) {
   const targetId = dealId || STATE.expandedBookingId;
   const b = STATE.bookings.find((item) => item.id === targetId);
   if (!b) return;
@@ -2314,8 +2398,10 @@ window.openBulkModal = function (dealId, prefill = null) {
   STATE.expandedBookingId = b.id;
   if ($("modalBookingLabel")) $("modalBookingLabel").textContent = `#${b.Booking_Number} (${b.Deal_Name})`;
   if ($("bulkTbody")) $("bulkTbody").innerHTML = "";
-  addBulkRow(prefill);
   toggleModal("bulkModal", true);
+
+  await ensureCatalogsLoaded();
+  addBulkRow(prefill);
 };
 
 function renderDatalistOptions(datalistEl, items, nameKey) {
@@ -2650,7 +2736,6 @@ async function submitOperationUpdate() {
     Details_of_Product: detailsNotes
   };
 
-  // Collect updated Product_Details rows (Start Date, Start Time, Pax, List_Price)
   const existingLines = Array.isArray(op?.Product_Details) ? op.Product_Details : [];
   const editorRows = Array.from(document.querySelectorAll("#opServicesEditorWrap tbody tr"));
 
