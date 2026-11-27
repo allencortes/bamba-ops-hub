@@ -8,63 +8,71 @@
   <script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo-dot"></span>
-      <div>
-        <h1>OPS Hub <span class="version-pill">v2</span></h1>
-        <p class="subtitle">Live Operational & Financial Control (CRM + Books)</p>
-      </div>
-    </div>
-
-    <div class="filters">
-      <span id="sdkStatus" class="badge badge-warn">Connecting Zoho...</span>
-
-      <select id="filterStage" title="Booking Stage">
-        <option value="Booking Won" selected>Stage: Booking Won</option>
-        <option value="Booked (On Hold)">Stage: Booked (On Hold)</option>
-        <option value="TEST">Stage: TEST (Sandbox)</option>
-      </select>
-
-      <select id="filterPlatform" title="Sales Platform">
-        <option value="ALL">All Platforms</option>
-        <option value="Bamba Travel">Bamba Travel</option>
-        <option value="Baboo Travel">Baboo Travel</option>
-        <option value="BeDMC">BeDMC</option>
-        <option value="BeMexicoDMC">BeMexicoDMC</option>
-        <option value="BePeruDMC">BePeruDMC</option>
-        <option value="Peru Inca Trail">Peru Inca Trail</option>
-        <option value="Urban Day Trips">Urban Day Trips</option>
-      </select>
-
-      <select id="filterOwner" title="Assigned Coordinator">
-        <option value="ALL">All Coordinators</option>
-      </select>
-
-      <select id="filterStartDate" title="Trip Start Date Window">
-        <option value="ALL">Start Date: All</option>
-        <option value="NEXT_7">Next 7 Days</option>
-        <option value="NEXT_14">Next 14 Days</option>
-        <option value="THIS_MONTH">This Month</option>
-        <option value="NEXT_MONTH">Next Month</option>
-      </select>
-
-      <div class="date-filter-wrap" title="Initial query start date (default Nov 1, 2026)">
-        <label for="filterSinceDate" class="subtitle" style="font-weight:600; white-space:nowrap;">Trips From:</label>
-        <input type="date" id="filterSinceDate" value="2026-11-01" />
+  <div class="sticky-chrome">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo-dot"></span>
+        <div>
+          <h1>OPS Hub <span class="version-pill">v2</span></h1>
+          <p class="subtitle">Live Operational &amp; Financial Control (CRM + Books)</p>
+        </div>
       </div>
 
-      <input type="text" id="searchInput" placeholder="Search Booking #, client, or name..." />
-      <button id="btnRefresh" class="btn btn-secondary">↻ Refresh</button>
-    </div>
-  </header>
+      <div class="filters">
+        <span id="sdkStatus" class="badge badge-warn">Connecting Zoho...</span>
 
-  <nav class="subnav" id="mainTabs">
-    <button type="button" class="tab-btn active" data-tab="operations">Operations</button>
-    <button type="button" class="tab-btn" data-tab="finance">Finance &amp; Margins</button>
-    <button type="button" class="tab-btn" data-tab="statements">Supplier Statements</button>
-    <button type="button" class="tab-btn" data-tab="reports">Management &amp; Reports</button>
-  </nav>
+        <select id="filterStage" title="Booking Stage">
+          <option value="Booking Won" selected>Stage: Booking Won</option>
+          <option value="Booked (On Hold)">Stage: Booked (On Hold)</option>
+          <option value="TEST">Stage: TEST (Sandbox)</option>
+        </select>
+
+        <select id="filterPlatform" title="Sales Platform">
+          <option value="ALL">All Platforms</option>
+          <option value="Bamba Travel">Bamba Travel</option>
+          <option value="Baboo Travel">Baboo Travel</option>
+          <option value="BeDMC">BeDMC</option>
+          <option value="BeMexicoDMC">BeMexicoDMC</option>
+          <option value="BePeruDMC">BePeruDMC</option>
+          <option value="Peru Inca Trail">Peru Inca Trail</option>
+          <option value="Urban Day Trips">Urban Day Trips</option>
+        </select>
+
+        <select id="filterOwner" title="Assigned Coordinator">
+          <option value="ALL">All Coordinators</option>
+        </select>
+
+        <select id="filterStartDate" title="Trip Start Date Window">
+          <option value="ALL">Start Date: All</option>
+          <option value="NEXT_7">Next 7 Days</option>
+          <option value="NEXT_14">Next 14 Days</option>
+          <option value="THIS_MONTH">This Month</option>
+          <option value="NEXT_MONTH">Next Month</option>
+        </select>
+
+        <div class="date-filter-wrap" title="Filter trips starting from this date">
+          <label for="filterSinceDate" class="subtitle" style="font-weight:600; white-space:nowrap;">Trips From:</label>
+          <input type="date" id="filterSinceDate" value="2026-11-01" />
+        </div>
+
+        <div class="date-filter-wrap" title="Filter trips starting up to this date (optional)">
+          <label for="filterToDate" class="subtitle" style="font-weight:600; white-space:nowrap;">To:</label>
+          <input type="date" id="filterToDate" />
+        </div>
+
+        <input type="text" id="searchInput" placeholder="Search Booking #, client, or name..." />
+        <button type="button" id="btnResetFilters" class="btn btn-secondary" title="Clear saved filter preferences">Reset Filters</button>
+        <button type="button" id="btnRefresh" class="btn btn-secondary">↻ Refresh</button>
+      </div>
+    </header>
+
+    <nav class="subnav" id="mainTabs">
+      <button type="button" class="tab-btn active" data-tab="operations">Operations</button>
+      <button type="button" class="tab-btn" data-tab="finance">Finance &amp; Margins</button>
+      <button type="button" class="tab-btn" data-tab="statements">Supplier Statements</button>
+      <button type="button" class="tab-btn" data-tab="reports">Management &amp; Reports</button>
+    </nav>
+  </div>
 
   <main class="workspace-single">
     <!-- TAB 1: OPERATIONS -->
@@ -74,7 +82,6 @@
           <h2>Active Bookings (<span id="bookingsCount">0</span>)</h2>
           <p class="subtitle">Click any booking row to expand its passengers, service checklist, notes, attachments, and operations.</p>
         </div>
-        <div id="ownerWorkloadBar" class="workload-pills"></div>
       </div>
 
       <div id="bookingsAccordion" class="accordion-list">
@@ -193,6 +200,7 @@
             <thead>
               <tr>
                 <th>Service Date *</th>
+                <th>Start Time / Schedule</th>
                 <th>Supplier (Vendor) *</th>
                 <th>Service (Product) *</th>
                 <th>Pax *</th>
@@ -213,61 +221,77 @@
     </div>
   </div>
 
-  <!-- MODAL MANAGE / PAY -->
+  <!-- MODAL MANAGE / PAY & SERVICE SCHEDULES -->
   <div id="payModal" class="modal hidden">
-    <div class="modal-content modal-sm">
+    <div class="modal-content modal-lg">
       <div class="modal-header">
-        <h3>Update Status / Payment — <span id="payOpName"></span></h3>
+        <h3>Manage Operation &amp; Service Schedules — <span id="payOpName"></span></h3>
         <button id="closePayModal" class="btn-icon">✕</button>
       </div>
       <div class="modal-body">
         <input type="hidden" id="payOpId" />
 
-        <div class="form-group">
-          <label>Reservation Status</label>
-          <select id="payResStatus">
-            <option value="Supplier Confirmation Awaited">Supplier Confirmation Awaited</option>
-            <option value="Supplier Confirmed">Supplier Confirmed</option>
-            <option value="Traveler Confirmation Sent">Traveler Confirmation Sent</option>
-            <option value="Trip Ended">Trip Ended</option>
-            <option value="Cancelled">Cancelled</option>
-          </select>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Reservation Status</label>
+            <select id="payResStatus">
+              <option value="Supplier Confirmation Awaited">Supplier Confirmation Awaited</option>
+              <option value="Supplier Confirmed">Supplier Confirmed</option>
+              <option value="Traveler Confirmation Sent">Traveler Confirmation Sent</option>
+              <option value="Trip Ended">Trip Ended</option>
+              <option value="Cancelled">Cancelled</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Zoho Books Financial Action</label>
+            <select id="payActionType">
+              <option value="NONE">Update Operation / Schedules only</option>
+              <option value="SCHEDULED">Scheduled Payment (Creates Bill as Due)</option>
+              <option value="PAID_NOW">Paid Immediately (Creates Bill as Paid)</option>
+            </select>
+          </div>
         </div>
 
         <div class="form-group">
-          <label>Zoho Books Financial Action</label>
-          <select id="payActionType">
-            <option value="NONE">Update Reservation Status only</option>
-            <option value="SCHEDULED">Scheduled Payment (Creates Bill as Due)</option>
-            <option value="PAID_NOW">Paid Immediately (Creates Bill as Paid)</option>
-          </select>
+          <label for="payDetailsNotes">Operation Notes / Schedule Remarks (<code>Details of Product</code>)</label>
+          <textarea id="payDetailsNotes" rows="2" placeholder="General schedule notes, bus company instructions, variable pickup remarks..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>Services in this Operation (Edit Date, Start Time, Pax &amp; Cost)</label>
+          <div id="opServicesEditorWrap" class="table-wrapper">
+            <div class="empty-state" style="padding:14px;">Loading services...</div>
+          </div>
         </div>
 
         <div id="scheduledFields" class="conditional-box hidden">
-          <div class="form-group">
+          <div class="form-group" style="margin-bottom:0;">
             <label>Expected Payment Date *</label>
             <input type="date" id="payExpectedDate" />
           </div>
         </div>
 
         <div id="paidNowFields" class="conditional-box hidden">
-          <div class="form-group">
-            <label>1st Payment Date *</label>
-            <input type="date" id="payDate" />
+          <div class="form-row-2">
+            <div class="form-group">
+              <label>Payment Date *</label>
+              <input type="date" id="payDate" />
+            </div>
+            <div class="form-group">
+              <label>Payment Amount *</label>
+              <input type="number" step="0.01" id="payAmount" />
+            </div>
           </div>
           <div class="form-group">
-            <label>1st Payment Amount *</label>
-            <input type="number" step="0.01" id="payAmount" />
-          </div>
-          <div class="form-group">
-            <label>1st Payment From (Method) *</label>
+            <label>Payment From (Method) *</label>
             <select id="payMethod">
               <option value="Wise Bamba Travel Inc">Wise Bamba Travel Inc</option>
             </select>
           </div>
           <label class="checkbox-inline">
             <input type="checkbox" id="paySendBooks" checked />
-            <span>Enable <strong>Send 1st Payment to Books</strong></span>
+            <span>Enable <strong>Send Payment to Books</strong></span>
           </label>
         </div>
       </div>
