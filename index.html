@@ -80,7 +80,7 @@
       <div class="list-summary-bar">
         <div>
           <h2>Active Bookings (<span id="bookingsCount">0</span>)</h2>
-          <p class="subtitle">Sorted chronologically by Start Date. Click any booking row to expand passengers, checklist, notes, attachments, and operations.</p>
+          <p class="subtitle">Sorted chronologically by Start Date. Click any booking row to expand passengers, trip plan, notes, attachments, and operations.</p>
         </div>
       </div>
 
@@ -123,17 +123,20 @@
   <div id="loadServicesModal" class="modal hidden">
     <div class="modal-content modal-md">
       <div class="modal-header">
-        <h3>Load Services Checklist — <span id="loadServicesBookingLabel"></span></h3>
+        <h3>Load Trip Master Services — <span id="loadServicesBookingLabel"></span></h3>
         <button type="button" id="closeLoadServicesModal" class="btn-icon">✕</button>
       </div>
       <div class="modal-body">
         <p class="hint">
-          Import the trip's service list as a checklist stored inside the Booking's Notes. Expected columns: <strong>Date, Service, Note</strong> (date and note are optional).
+          Import the trip's planned services so they appear directly in the Booking's Operations Plan table and calculate real booking progress from day 1. Columns: <strong>Date, Service, Note</strong>.
         </p>
 
-        <div class="mode-switch">
-          <button type="button" class="btn btn-primary btn-sm" id="btnModeText">Paste Text / List</button>
-          <button type="button" class="btn btn-secondary btn-sm" id="btnModeCsv">Upload CSV</button>
+        <div class="mode-switch" style="justify-content:space-between; align-items:center;">
+          <div style="display:flex; gap:6px;">
+            <button type="button" class="btn btn-primary btn-sm" id="btnModeText">Paste Text / List</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btnModeCsv">Upload CSV</button>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnDownloadServicesTemplate">⬇ Download CSV Template</button>
         </div>
 
         <div id="modeTextBox" class="form-group">
@@ -151,7 +154,7 @@
           <button type="button" id="btnPreviewServices" class="btn btn-secondary btn-sm">Preview Parsed Services</button>
           <label class="checkbox-inline">
             <input type="checkbox" id="appendServicesChk" checked />
-            <span>Append to existing checklist (uncheck to replace)</span>
+            <span>Append to existing trip plan (uncheck to replace)</span>
           </label>
         </div>
 
@@ -170,7 +173,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" id="cancelLoadServices" class="btn btn-secondary">Cancel</button>
-        <button type="button" id="submitLoadServices" class="btn btn-primary">Save Services Checklist</button>
+        <button type="button" id="submitLoadServices" class="btn btn-primary">Save Trip Plan</button>
       </div>
     </div>
   </div>
@@ -184,7 +187,7 @@
       </div>
       <div class="modal-body">
         <p class="hint">
-          Each row creates a record in <strong>Operations (Bills)</strong> linked to this Booking and automatically triggers the Purchase Order in Zoho Books.
+          Each row creates a service line inside <strong>Operations (Bills)</strong>. Rows sharing the same Supplier, Service Date, and Payment Flow are automatically grouped into a single Purchase Order.
         </p>
 
         <div class="bulk-toolbar">
@@ -225,7 +228,10 @@
   <div id="payModal" class="modal hidden">
     <div class="modal-content modal-lg">
       <div class="modal-header">
-        <h3>Manage Operation &amp; Service Schedules — <span id="payOpName"></span></h3>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <h3>Manage Operation — <span id="payOpName" class="mono"></span></h3>
+          <button type="button" id="btnCopyPayRef" class="copy-btn-mini" title="Copy reference for card reconciliation">Copy Ref</button>
+        </div>
         <button id="closePayModal" class="btn-icon">✕</button>
       </div>
       <div class="modal-body">
