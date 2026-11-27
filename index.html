@@ -52,16 +52,16 @@
 
         <div class="date-filter-wrap" title="Filter trips starting from this date">
           <label for="filterSinceDate" class="subtitle" style="font-weight:600; white-space:nowrap;">Trips From:</label>
-          <input type="date" id="filterSinceDate" value="2026-11-01" />
+          <input type="date" id="filterSinceDate" />
         </div>
 
-        <div class="date-filter-wrap" title="Filter trips starting up to this date (optional)">
+        <div class="date-filter-wrap" title="Filter trips starting up to this date">
           <label for="filterToDate" class="subtitle" style="font-weight:600; white-space:nowrap;">To:</label>
           <input type="date" id="filterToDate" />
         </div>
 
         <input type="text" id="searchInput" placeholder="Search Booking #, client, or name..." />
-        <button type="button" id="btnResetFilters" class="btn btn-secondary" title="Clear saved filter preferences">Reset Filters</button>
+        <button type="button" id="btnResetFilters" class="btn btn-secondary" title="Reset to active/upcoming window">Reset Filters</button>
         <button type="button" id="btnRefresh" class="btn btn-secondary">↻ Refresh</button>
       </div>
     </header>
@@ -80,7 +80,7 @@
       <div class="list-summary-bar">
         <div>
           <h2>Active Bookings (<span id="bookingsCount">0</span>)</h2>
-          <p class="subtitle">Click any booking row to expand its passengers, service checklist, notes, attachments, and operations.</p>
+          <p class="subtitle">Sorted chronologically by Start Date. Click any booking row to expand passengers, checklist, notes, attachments, and operations.</p>
         </div>
       </div>
 
