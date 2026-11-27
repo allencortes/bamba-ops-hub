@@ -1,8 +1,16 @@
-// OPS Hub v2 — Step 2 (Dual SDK Boot + Attachments + Explicit Passport + Clean Notes)
+// OPS Hub v2 — Step 3 (Operations: Nov 1, 2026 Start Filter, Date Formatting, Management Owner Lock, Subheader Quick Edit & Passenger CRUD)
+const DEFAULT_START_DATE = "2026-11-01";
+const MANAGEMENT_PROFILES = ["administrator", "management"];
+const MANAGEMENT_ROLES = ["manager", "management", "ceo", "director"];
+const MANAGEMENT_EMAILS = ["allen@bambatravel.com"];
+
 const STATE = {
   bookings: [],
   filteredBookings: [],
   expandedBookingId: null,
+  editingDealId: null,
+  passengerFormDealId: null,
+  editingPassengerKey: null,
   operationsByDeal: {},
   passengersByDeal: {},
   notesByDeal: {},
@@ -52,12 +60,75 @@ function fmtMoney(val) {
   return "$" + num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function parseDateSafe(dateVal) {
+  if (!dateVal) return null;
+  const str = String(dateVal).trim();
+  if (!str) return null;
+
+  // Match YYYY-MM-DD or ISO prefix to avoid UTC timezone shift
+  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const y = parseInt(isoMatch[1], 10);
+    const m = parseInt(isoMatch[2], 10) - 1;
+    const d = parseInt(isoMatch[3], 10);
+    const dt = new Date(y, m, d);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  const parsed = new Date(str);
+  if (isNaN(parsed.getTime())) return null;
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
+function toIsoDateInput(dateVal) {
+  const dt = parseDateSafe(dateVal);
+  if (!dt) return "";
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function fmtDateDisplay(dateVal, fallback = "-") {
+  const dt = parseDateSafe(dateVal);
+  if (!dt) return fallback;
+  return dt.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+}
+
+function canManageOwner() {
+  const user = STATE.currentUser;
+  if (!user) return false;
+
+  const email = (user.email || user.email_id || "").trim().toLowerCase();
+  if (email && MANAGEMENT_EMAILS.includes(email)) return true;
+
+  const profileName = (user.profile?.name || "").trim().toLowerCase();
+  if (profileName && MANAGEMENT_PROFILES.some((p) => profileName.includes(p))) return true;
+
+  const roleName = (user.role?.name || "").trim().toLowerCase();
+  if (roleName && MANAGEMENT_ROLES.some((r) => roleName.includes(r))) return true;
+
+  return false;
+}
+
 function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function escapeJsAttr(str) {
+  return String(str || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/"/g, "&quot;")
+    .replace(/\r?\n/g, " ");
 }
 
 function sanitizeNoteHtml(rawHtml) {
@@ -156,7 +227,6 @@ async function runBootSequence(triggerSource) {
   const accordion = $("bookingsAccordion");
 
   try {
-    // Verify bridge with Zoho CRM first
     const userRes = await ZOHO.CRM.CONFIG.getCurrentUser();
     STATE.currentUser = userRes?.users?.[0] || null;
 
@@ -206,7 +276,6 @@ function bootZohoSDK() {
     console.error("ZOHO.embeddedApp.init threw:", e);
   }
 
-  // Fallback in case PageLoad already fired or widget is inside a Web Tab
   setTimeout(function () {
     if (!STATE.booted) {
       runBootSequence("DirectInit");
@@ -228,9 +297,33 @@ async function initApp() {
     console.warn("Could not fetch CRM users", e);
   }
 
+  ensureSinceDateInput();
   populatePayModalAccounts();
   bindEvents();
   await Promise.all([loadBookings(), loadVendorsAndProducts()]);
+}
+
+function ensureSinceDateInput() {
+  if ($("filterSinceDate")) {
+    if (!$("filterSinceDate").value) {
+      $("filterSinceDate").value = DEFAULT_START_DATE;
+    }
+    return;
+  }
+
+  const filterStartDateEl = $("filterStartDate");
+  if (!filterStartDateEl || !filterStartDateEl.parentElement) return;
+
+  const wrapper = document.createElement("span");
+  wrapper.style.display = "inline-flex";
+  wrapper.style.alignItems = "center";
+  wrapper.style.gap = "6px";
+  wrapper.style.marginLeft = "6px";
+  wrapper.innerHTML = `
+    <label for="filterSinceDate" class="subtitle" style="font-weight:600; white-space:nowrap;">Trips From:</label>
+    <input type="date" id="filterSinceDate" value="${DEFAULT_START_DATE}" title="Initial query start date (default Nov 1, 2026)" />
+  `;
+  filterStartDateEl.parentElement.appendChild(wrapper);
 }
 
 function populatePayModalAccounts() {
@@ -242,12 +335,26 @@ function populatePayModalAccounts() {
   }
 }
 
+let searchDebounceTimer = null;
+
 function bindEvents() {
   if ($("filterStage")) $("filterStage").addEventListener("change", loadBookings);
+  if ($("filterSinceDate")) $("filterSinceDate").addEventListener("change", loadBookings);
   if ($("filterPlatform")) $("filterPlatform").addEventListener("change", applyFilters);
   if ($("filterOwner")) $("filterOwner").addEventListener("change", applyFilters);
   if ($("filterStartDate")) $("filterStartDate").addEventListener("change", applyFilters);
-  if ($("searchInput")) $("searchInput").addEventListener("input", applyFilters);
+  if ($("searchInput")) {
+    $("searchInput").addEventListener("input", () => {
+      applyFilters();
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(async () => {
+        const term = ($("searchInput")?.value || "").trim();
+        if (term.length >= 3 && STATE.filteredBookings.length === 0) {
+          await searchHistoricalBookings(term);
+        }
+      }, 500);
+    });
+  }
   if ($("btnRefresh")) {
     $("btnRefresh").addEventListener("click", () => {
       STATE.operationsByDeal = {};
@@ -297,24 +404,106 @@ function toggleModal(id, show) {
   if (el) el.classList.toggle("hidden", !show);
 }
 
-async function loadBookings() {
-  const accordion = $("bookingsAccordion");
-  if (accordion) accordion.innerHTML = `<div class="empty-state">Loading Bookings...</div>`;
-  const stage = $("filterStage")?.value || "Booking Won";
+async function fetchPaginatedDeals(criteriaQuery) {
+  let all = [];
+  let page = 1;
+  let moreRecords = true;
 
-  try {
+  while (moreRecords && page <= 15) {
     const res = await ZOHO.CRM.API.searchRecord({
       Entity: "Deals",
       Type: "criteria",
-      Query: `(Stage:equals:${stage})`
+      Query: criteriaQuery,
+      page,
+      per_page: 200
     });
+    const batch = Array.isArray(res?.data) ? res.data : [];
+    all = all.concat(batch);
+    moreRecords = Boolean(res?.info?.more_records) && batch.length > 0;
+    page++;
+  }
 
-    STATE.bookings = (res && res.data) ? res.data : [];
+  return all;
+}
+
+async function loadBookings() {
+  const accordion = $("bookingsAccordion");
+  if (accordion) accordion.innerHTML = `<div class="empty-state">Loading Bookings...</div>`;
+
+  const stage = $("filterStage")?.value || "Booking Won";
+  const sinceDate = $("filterSinceDate")?.value || DEFAULT_START_DATE;
+
+  try {
+    let rows = [];
+    if (sinceDate) {
+      const criteriaWithDate = `((Stage:equals:${stage})and(Trip_Start_Date:greater_than:${sinceDate}))`;
+      try {
+        rows = await fetchPaginatedDeals(criteriaWithDate);
+      } catch (criteriaErr) {
+        // Fallback if Trip_Start_Date criteria isn't supported directly in searchRecord
+        console.warn("Date criteria fallback to stage + client filter:", criteriaErr);
+        const stageRows = await fetchPaginatedDeals(`(Stage:equals:${stage})`);
+        const cutoffDt = parseDateSafe(sinceDate);
+        rows = stageRows.filter((b) => {
+          const startDt = parseDateSafe(b.Trip_Start_Date);
+          return cutoffDt && startDt && startDt >= cutoffDt;
+        });
+      }
+    } else {
+      rows = await fetchPaginatedDeals(`(Stage:equals:${stage})`);
+    }
+
+    // Deduplicate by id
+    const map = new Map();
+    rows.forEach((r) => {
+      if (r && r.id) map.set(r.id, r);
+    });
+    STATE.bookings = Array.from(map.values());
+
     buildOwnerFilterAndWorkload();
     applyFilters();
   } catch (err) {
     console.error("Error loading Deals:", err);
     if (accordion) accordion.innerHTML = `<div class="empty-state">No records found or query error.</div>`;
+  }
+}
+
+async function searchHistoricalBookings(term) {
+  const cleanTerm = term.trim();
+  if (!cleanTerm) return;
+
+  try {
+    const [byNumRes, byWordRes] = await Promise.all([
+      ZOHO.CRM.API.searchRecord({
+        Entity: "Deals",
+        Type: "criteria",
+        Query: `(Booking_Number:equals:${cleanTerm})`
+      }).catch(() => ({ data: [] })),
+      ZOHO.CRM.API.searchRecord({
+        Entity: "Deals",
+        Type: "word",
+        Query: cleanTerm
+      }).catch(() => ({ data: [] }))
+    ]);
+
+    const found = [...(byNumRes?.data || []), ...(byWordRes?.data || [])];
+    if (!found.length) return;
+
+    let added = 0;
+    found.forEach((item) => {
+      if (item?.id && !STATE.bookings.some((b) => b.id === item.id)) {
+        STATE.bookings.push(item);
+        added++;
+      }
+    });
+
+    if (added > 0) {
+      buildOwnerFilterAndWorkload();
+      applyFilters();
+      showToast(`Found ${added} matching Booking(s) from CRM archive.`);
+    }
+  } catch (e) {
+    console.warn("Historical search error:", e);
   }
 }
 
@@ -355,12 +544,11 @@ window.quickFilterOwner = function (ownerId) {
 
 function matchesStartDateWindow(dateStr, windowKey) {
   if (windowKey === "ALL") return true;
-  if (!dateStr) return false;
+  const target = parseDateSafe(dateStr);
+  if (!target) return false;
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const target = new Date(dateStr + "T00:00:00");
-  if (isNaN(target.getTime())) return false;
 
   const diffDays = Math.ceil((target - today) / (1000 * 60 * 60 * 24));
 
@@ -407,34 +595,35 @@ function renderBookingsAccordion() {
   }
 
   accordion.innerHTML = STATE.filteredBookings.map((b) => {
+    const full = STATE.dealFullRecord[b.id] || b;
     const isExpanded = STATE.expandedBookingId === b.id;
-    const opsBadge = b.Operations_Stage === "Nothing is booked" ? "badge-danger" : "badge-info";
-    const clientPayBadge = b.Booking_Payment_Status === "Paid" ? "badge-ok" : "badge-warn";
-    const ownerName = b.Owner?.name || "Unassigned";
+    const opsBadge = full.Operations_Stage === "Nothing is booked" ? "badge-danger" : "badge-info";
+    const clientPayBadge = full.Booking_Payment_Status === "Paid" ? "badge-ok" : "badge-warn";
+    const ownerName = full.Owner?.name || "Unassigned";
 
     return `
       <div class="accordion-item ${isExpanded ? "expanded" : ""}" id="acc_${b.id}">
         <div class="accordion-header" onclick="toggleBookingAccordion('${b.id}')">
           <div class="acc-id-col">
-            <span class="mono"><strong>#${escapeHtml(b.Booking_Number || "N/A")}</strong></span>
-            ${getPlatformBadgeHtml(b.Sales_Platform)}
+            <span class="mono"><strong>#${escapeHtml(full.Booking_Number || "N/A")}</strong></span>
+            ${getPlatformBadgeHtml(full.Sales_Platform)}
           </div>
 
           <div class="acc-main-col">
-            <div class="acc-title">${escapeHtml(b.Deal_Name || "Untitled Booking")}</div>
+            <div class="acc-title">${escapeHtml(full.Deal_Name || "Untitled Booking")}</div>
             <div class="acc-sub">
-              Passenger: <strong>${escapeHtml(b.Contact_Name?.name || "No passenger")}</strong> · ${b.Number_of_Passengers || 1} PAX · Owner: <strong>${escapeHtml(ownerName)}</strong>
+              Passenger: <strong>${escapeHtml(full.Contact_Name?.name || "No passenger")}</strong> · ${full.Number_of_Passengers || 1} PAX · Owner: <strong>${escapeHtml(ownerName)}</strong>
             </div>
           </div>
 
           <div class="acc-dates-col">
-            <span><strong>Start:</strong> ${b.Trip_Start_Date || "No date"}</span>
-            <span class="subtitle">End: ${b.Trip_End_Date || "-"} (${b.Trip_Duration_Days || "?"}d)</span>
+            <span><strong>Start:</strong> ${escapeHtml(fmtDateDisplay(full.Trip_Start_Date, "No date"))}</span>
+            <span class="subtitle">End: ${escapeHtml(fmtDateDisplay(full.Trip_End_Date, "-"))} (${full.Trip_Duration_Days || "?"}d)</span>
           </div>
 
           <div class="acc-status-col">
-            <span class="badge ${opsBadge}">${escapeHtml(b.Operations_Stage || "Pending")}</span>
-            <span class="badge ${clientPayBadge}">Client: ${escapeHtml(b.Booking_Payment_Status || "Unpaid")}</span>
+            <span class="badge ${opsBadge}">${escapeHtml(full.Operations_Stage || "Pending")}</span>
+            <span class="badge ${clientPayBadge}">Client: ${escapeHtml(full.Booking_Payment_Status || "Unpaid")}</span>
           </div>
 
           <div class="acc-chevron">▼</div>
@@ -449,6 +638,9 @@ function renderBookingsAccordion() {
 window.toggleBookingAccordion = async function (dealId) {
   if (STATE.expandedBookingId === dealId) {
     STATE.expandedBookingId = null;
+    if (STATE.editingDealId === dealId) STATE.editingDealId = null;
+    if (STATE.passengerFormDealId === dealId) STATE.passengerFormDealId = null;
+    STATE.editingPassengerKey = null;
     renderBookingsAccordion();
     return;
   }
@@ -568,7 +760,13 @@ async function fetchAttachmentsForDeal(dealId) {
 }
 
 window.assignBookingOwner = async function (dealId, newOwnerId) {
+  if (!canManageOwner()) {
+    showToast("Only Management / Administrators can change Booking Coordinator.");
+    renderBookingsAccordion();
+    return;
+  }
   if (!newOwnerId) return;
+
   try {
     showToast("Updating Booking Owner...");
     await ZOHO.CRM.API.updateRecord({
@@ -580,23 +778,207 @@ window.assignBookingOwner = async function (dealId, newOwnerId) {
     });
 
     const userObj = STATE.crmUsers.find((u) => u.id === newOwnerId);
+    const ownerPayload = userObj
+      ? { id: userObj.id, name: userObj.full_name }
+      : { id: newOwnerId, name: "Assigned" };
+
     const booking = STATE.bookings.find((b) => b.id === dealId);
-    if (booking && userObj) {
-      booking.Owner = { id: userObj.id, name: userObj.full_name };
-    }
+    if (booking) booking.Owner = ownerPayload;
+    if (STATE.dealFullRecord[dealId]) STATE.dealFullRecord[dealId].Owner = ownerPayload;
+
     buildOwnerFilterAndWorkload();
     renderBookingsAccordion();
     showToast(`Assigned to ${userObj?.full_name || "coordinator"}`);
   } catch (err) {
     console.error("Error updating owner:", err);
     showToast("Could not update Booking Owner.");
+    renderBookingsAccordion();
+  }
+};
+
+// --- SUBHEADER QUICK EDIT (Pick-up, Accommodation, Flights, URL) ---
+window.toggleEditSubheader = function (e, dealId, enable) {
+  if (e) e.stopPropagation();
+  STATE.editingDealId = enable ? dealId : null;
+  renderBookingsAccordion();
+};
+
+window.saveSubheaderDetails = async function (e, dealId) {
+  if (e) e.stopPropagation();
+
+  const pickupVal = ($(`edit_pickup_${dealId}`)?.value || "").trim();
+  const flightsVal = ($(`edit_flights_${dealId}`)?.value || "").trim();
+  let urlVal = ($(`edit_url_${dealId}`)?.value || "").trim();
+
+  if (urlVal && !/^https?:\/\//i.test(urlVal)) {
+    urlVal = "https://" + urlVal;
+  }
+
+  const payload = {
+    id: dealId,
+    Accommodation_Pick_up_Point: pickupVal,
+    Flight_Details: flightsVal,
+    Travefy_URL: urlVal
+  };
+
+  try {
+    showToast("Saving Booking details...");
+    await ZOHO.CRM.API.updateRecord({
+      Entity: "Deals",
+      APIData: payload,
+      Trigger: ["workflow"]
+    });
+
+    const booking = STATE.bookings.find((b) => b.id === dealId);
+    if (booking) {
+      booking.Accommodation_Pick_up_Point = pickupVal;
+      booking.Flight_Details = flightsVal;
+      booking.Travefy_URL = urlVal;
+    }
+    if (STATE.dealFullRecord[dealId]) {
+      STATE.dealFullRecord[dealId].Accommodation_Pick_up_Point = pickupVal;
+      STATE.dealFullRecord[dealId].Flight_Details = flightsVal;
+      STATE.dealFullRecord[dealId].Travefy_URL = urlVal;
+    }
+
+    STATE.editingDealId = null;
+    renderBookingsAccordion();
+    showToast("Pick-up, Flights & URL updated!");
+  } catch (err) {
+    console.error("Error updating subheader details:", err);
+    showToast("Could not save Booking details.");
+  }
+};
+
+// --- PASSENGERS & PASSPORTS (Add & Inline Edit in CustomModule5) ---
+window.toggleAddPassengerForm = function (e, dealId, show) {
+  if (e) e.stopPropagation();
+  if (!STATE.openSubDrawers[dealId]) {
+    STATE.openSubDrawers[dealId] = { passengers: true, notes: false };
+  }
+  STATE.openSubDrawers[dealId].passengers = true;
+  STATE.passengerFormDealId = show ? dealId : null;
+  STATE.editingPassengerKey = null;
+  renderBookingsAccordion();
+};
+
+window.createPassengerRecord = async function (e, dealId) {
+  if (e) e.stopPropagation();
+
+  const nameVal = ($(`new_pax_name_${dealId}`)?.value || "").trim();
+  if (!nameVal) {
+    showToast("Passenger Name is required.");
+    return;
+  }
+
+  const countryVal = ($(`new_pax_country_${dealId}`)?.value || "").trim();
+  const dobVal = ($(`new_pax_dob_${dealId}`)?.value || "").trim();
+  const passportVal = ($(`new_pax_passport_${dealId}`)?.value || "").trim();
+  const expiryVal = ($(`new_pax_expiry_${dealId}`)?.value || "").trim();
+  const genderVal = ($(`new_pax_gender_${dealId}`)?.value || "").trim();
+  const mobileVal = ($(`new_pax_mobile_${dealId}`)?.value || "").trim();
+  const emailVal = ($(`new_pax_email_${dealId}`)?.value || "").trim();
+  const dietVal = ($(`new_pax_diet_${dealId}`)?.value || "").trim();
+  const medVal = ($(`new_pax_med_${dealId}`)?.value || "").trim();
+
+  const recordData = {
+    Name: nameVal,
+    Booking_Name: dealId
+  };
+  if (countryVal) recordData.Country = countryVal;
+  if (dobVal) recordData.Date_of_Birth = dobVal;
+  if (passportVal) recordData.Passport_Number = passportVal;
+  if (expiryVal) recordData.Passport_Expiry_Date = expiryVal;
+  if (genderVal) recordData.Gender = genderVal;
+  if (mobileVal) recordData.Passenger_Mobile = mobileVal;
+  if (emailVal) recordData.Email = emailVal;
+  if (dietVal) recordData.Dietary_Requirements = dietVal;
+  if (medVal) recordData.Medical_Conditions = medVal;
+
+  try {
+    showToast("Adding passenger to Zoho CRM...");
+    await ZOHO.CRM.API.insertRecord({
+      Entity: "CustomModule5",
+      APIData: [recordData],
+      Trigger: ["workflow"]
+    });
+
+    STATE.passengerFormDealId = null;
+    await fetchPassengersForDeal(dealId);
+    renderBookingsAccordion();
+    showToast(`Passenger "${nameVal}" added!`);
+  } catch (err) {
+    console.error("Error creating passenger:", err);
+    showToast("Could not add passenger. Check field permissions.");
+  }
+};
+
+window.startEditPassengerRow = function (e, dealId, passengerId, rowIndex) {
+  if (e) e.stopPropagation();
+  STATE.editingPassengerKey = `${dealId}__${passengerId || rowIndex}`;
+  renderBookingsAccordion();
+};
+
+window.cancelEditPassengerRow = function (e) {
+  if (e) e.stopPropagation();
+  STATE.editingPassengerKey = null;
+  renderBookingsAccordion();
+};
+
+window.savePassengerRowEdit = async function (e, dealId, passengerId, rowIndex) {
+  if (e) e.stopPropagation();
+  const paxList = STATE.passengersByDeal[dealId] || [];
+  const currentPax = paxList[rowIndex] || {};
+  const targetId = passengerId || currentPax.id;
+
+  if (!targetId) {
+    showToast("Missing passenger record ID.");
+    return;
+  }
+
+  const key = `${dealId}__${targetId}`;
+  const nameVal = ($(`pax_edit_name_${key}`)?.value || "").trim();
+  if (!nameVal) {
+    showToast("Passenger Name cannot be empty.");
+    return;
+  }
+
+  const updatePayload = {
+    id: targetId,
+    Name: nameVal,
+    Country: ($(`pax_edit_country_${key}`)?.value || "").trim(),
+    Date_of_Birth: ($(`pax_edit_dob_${key}`)?.value || "").trim() || null,
+    Passport_Number: ($(`pax_edit_passport_${key}`)?.value || "").trim(),
+    Passport_Expiry_Date: ($(`pax_edit_expiry_${key}`)?.value || "").trim() || null,
+    Gender: ($(`pax_edit_gender_${key}`)?.value || "").trim(),
+    Passenger_Mobile: ($(`pax_edit_mobile_${key}`)?.value || "").trim(),
+    Email: ($(`pax_edit_email_${key}`)?.value || "").trim(),
+    Dietary_Requirements: ($(`pax_edit_diet_${key}`)?.value || "").trim(),
+    Medical_Conditions: ($(`pax_edit_med_${key}`)?.value || "").trim()
+  };
+
+  try {
+    showToast("Saving passenger details...");
+    await ZOHO.CRM.API.updateRecord({
+      Entity: "CustomModule5",
+      APIData: updatePayload,
+      Trigger: ["workflow"]
+    });
+
+    STATE.editingPassengerKey = null;
+    await fetchPassengersForDeal(dealId);
+    renderBookingsAccordion();
+    showToast(`Updated passenger "${nameVal}".`);
+  } catch (err) {
+    console.error("Error updating passenger:", err);
+    showToast("Could not update passenger record.");
   }
 };
 
 window.copyAllManifest = function (e, dealId) {
   if (e) e.stopPropagation();
   const paxList = STATE.passengersByDeal[dealId] || [];
-  const b = STATE.bookings.find((item) => item.id === dealId);
+  const b = STATE.dealFullRecord[dealId] || STATE.bookings.find((item) => item.id === dealId);
   if (!paxList.length) {
     showToast("No passengers to copy.");
     return;
@@ -606,9 +988,9 @@ window.copyAllManifest = function (e, dealId) {
     const parts = [
       `${idx + 1}. ${p.Name || "Unnamed"}`,
       p.Country ? `Nationality: ${p.Country}` : "",
-      p.Date_of_Birth ? `DOB: ${p.Date_of_Birth}` : "",
+      p.Date_of_Birth ? `DOB: ${fmtDateDisplay(p.Date_of_Birth)}` : "",
       p.Passport_Number ? `Passport: ${p.Passport_Number}` : "",
-      p.Passport_Expiry_Date ? `Exp: ${p.Passport_Expiry_Date}` : "",
+      p.Passport_Expiry_Date ? `Exp: ${fmtDateDisplay(p.Passport_Expiry_Date)}` : "",
       p.Gender ? `Gender: ${p.Gender}` : "",
       p.Dietary_Requirements ? `Diet: ${p.Dietary_Requirements}` : "",
       p.Medical_Conditions ? `Medical: ${p.Medical_Conditions}` : ""
@@ -651,6 +1033,9 @@ function renderExpandedBookingBody(b) {
   const notes = STATE.notesByDeal[b.id];
   const dealAttachments = STATE.attachmentsByDeal[b.id] || [];
   const drawers = STATE.openSubDrawers[b.id] || { passengers: true, notes: false };
+  const isEditingDeal = STATE.editingDealId === b.id;
+  const isAddingPax = STATE.passengerFormDealId === b.id;
+  const allowOwnerChange = canManageOwner();
 
   const noteAttachmentsCount = Array.isArray(notes)
     ? notes.reduce((sum, n) => sum + (Array.isArray(n.$attachments) ? n.$attachments.length : 0), 0)
@@ -666,7 +1051,7 @@ function renderExpandedBookingBody(b) {
     : `<option value="${currentOwnerId}">${escapeHtml(full.Owner?.name || "Unassigned")}</option>`;
 
   const travefyBtn = full.Travefy_URL
-    ? `<a href="${full.Travefy_URL}" target="_blank" class="btn btn-secondary btn-sm">Open Travefy ↗</a>`
+    ? `<a href="${escapeHtml(full.Travefy_URL)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Open Travefy ↗</a>`
     : `<span class="badge badge-warn">No Travefy URL</span>`;
 
   const hasAnyHealthOrDiet = Array.isArray(pax) && pax.some(
@@ -674,13 +1059,62 @@ function renderExpandedBookingBody(b) {
   );
 
   // 1. SUBHEADER HTML
+  const subheaderGridHtml = isEditingDeal
+    ? `
+      <div class="subheader-grid" style="margin-top:10px; padding:10px; border-radius:6px; background:rgba(0,0,0,0.03);">
+        <div class="meta-item">
+          <span class="meta-label">Pick-up / Accommodation</span>
+          <input type="text" id="edit_pickup_${b.id}" value="${escapeHtml(full.Accommodation_Pick_up_Point || "")}" placeholder="Hotel / pick-up point..." style="width:100%; padding:5px 8px; font-size:12px;" />
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Flight Details</span>
+          <input type="text" id="edit_flights_${b.id}" value="${escapeHtml(full.Flight_Details || "")}" placeholder="Arrival / departure flights..." style="width:100%; padding:5px 8px; font-size:12px;" />
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Travefy / Itinerary URL</span>
+          <input type="text" id="edit_url_${b.id}" value="${escapeHtml(full.Travefy_URL || "")}" placeholder="https://..." style="width:100%; padding:5px 8px; font-size:12px;" />
+        </div>
+        <div class="meta-item" style="display:flex; align-items:flex-end; gap:6px;">
+          <button type="button" class="btn btn-primary btn-sm" onclick="saveSubheaderDetails(event, '${b.id}')">Save Details</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleEditSubheader(event, '${b.id}', false)">Cancel</button>
+        </div>
+      </div>
+    `
+    : `
+      <div class="subheader-grid">
+        <div class="meta-item">
+          <span class="meta-label">Lead Passenger &amp; Contact</span>
+          <span class="meta-val">
+            <span class="copy-inline" onclick="copyText(event, '${escapeJsAttr(full.Contact_Name?.name || "")}', 'Name')">${escapeHtml(full.Contact_Name?.name || "N/A")}</span>
+            ${full.Email ? ` · <span class="copy-inline" onclick="copyText(event, '${escapeJsAttr(full.Email)}', 'Email')">${escapeHtml(full.Email)}</span>` : ""}
+            ${full.Phone ? ` · <span class="copy-inline" onclick="copyText(event, '${escapeJsAttr(full.Phone)}', 'Phone')">${escapeHtml(full.Phone)}</span>` : ""}
+          </span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Pick-up / Accommodation</span>
+          <span class="meta-val">${escapeHtml(full.Accommodation_Pick_up_Point || "Not specified")}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Flight Details</span>
+          <span class="meta-val">${escapeHtml(full.Flight_Details || "Not specified")}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Itinerary URL / Sales Order</span>
+          <span class="meta-val">
+            ${full.Travefy_URL ? `<a href="${escapeHtml(full.Travefy_URL)}" target="_blank" rel="noopener noreferrer">${escapeHtml(full.Travefy_URL)}</a> · ` : ""}
+            ${escapeHtml(full.Sales_Order_Number || "No SO")} · ${escapeHtml(full.Interested_In_Services || "Tailor-Made")}
+          </span>
+        </div>
+      </div>
+    `;
+
   const subheaderHtml = `
     <div class="booking-subheader">
       <div class="subheader-top">
         <div class="subheader-id-group">
           <div class="copyable-id-box">
             <span>#${escapeHtml(full.Booking_Number || "N/A")}</span>
-            ${full.Booking_Number ? `<button type="button" class="copy-btn-mini" onclick="copyText(event, '${escapeHtml(full.Booking_Number)}', 'Booking ID')">Copy ID</button>` : ""}
+            ${full.Booking_Number ? `<button type="button" class="copy-btn-mini" onclick="copyText(event, '${escapeJsAttr(full.Booking_Number)}', 'Booking ID')">Copy ID</button>` : ""}
           </div>
 
           <button type="button" class="badge ${notesCount > 0 ? "badge-warn" : ""}" style="cursor:pointer; border:none;" onclick="toggleSubDrawer('${b.id}', 'notes')">
@@ -702,47 +1136,111 @@ function renderExpandedBookingBody(b) {
 
         <div class="subheader-id-group">
           <label class="subtitle" style="font-weight:600;">Coordinator:</label>
-          <select style="padding:4px 8px; font-size:12px;" onchange="assignBookingOwner('${b.id}', this.value)">
+          <select
+            style="padding:4px 8px; font-size:12px;"
+            ${allowOwnerChange ? `onchange="assignBookingOwner('${b.id}', this.value)"` : `disabled title="Management / Administrator only"`}
+          >
             ${ownerOptions}
           </select>
+          ${!allowOwnerChange ? `<span class="badge">Locked</span>` : ""}
+          ${!isEditingDeal ? `<button type="button" class="btn btn-secondary btn-sm" onclick="toggleEditSubheader(event, '${b.id}', true)">Edit Details</button>` : ""}
           <button type="button" class="btn btn-secondary btn-sm" onclick="openDealInCrm(event, '${b.id}')">Open in CRM ↗</button>
           ${travefyBtn}
           <button class="btn btn-primary btn-sm" onclick="openBulkModal('${b.id}')">+ Add Operations</button>
         </div>
       </div>
 
-      <div class="subheader-grid">
-        <div class="meta-item">
-          <span class="meta-label">Lead Passenger &amp; Contact</span>
-          <span class="meta-val">
-            <span class="copy-inline" onclick="copyText(event, '${escapeHtml(full.Contact_Name?.name || "")}', 'Name')">${escapeHtml(full.Contact_Name?.name || "N/A")}</span>
-            ${full.Email ? ` · <span class="copy-inline" onclick="copyText(event, '${escapeHtml(full.Email)}', 'Email')">${escapeHtml(full.Email)}</span>` : ""}
-            ${full.Phone ? ` · <span class="copy-inline" onclick="copyText(event, '${escapeHtml(full.Phone)}', 'Phone')">${escapeHtml(full.Phone)}</span>` : ""}
-          </span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">Pick-up / Accommodation</span>
-          <span class="meta-val">${escapeHtml(full.Accommodation_Pick_up_Point || "Not specified")}</span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">Flight Details</span>
-          <span class="meta-val">${escapeHtml(full.Flight_Details || "Not specified")}</span>
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">Sales Order / Service Type</span>
-          <span class="meta-val">${escapeHtml(full.Sales_Order_Number || "No SO")} · ${escapeHtml(full.Interested_In_Services || "Tailor-Made")}</span>
-        </div>
-      </div>
+      ${subheaderGridHtml}
     </div>
   `;
 
   // 2. PASSENGERS ACCORDION HTML
+  const addPassengerFormHtml = isAddingPax
+    ? `
+      <div style="padding:12px; border-bottom:1px solid var(--border, #e5e7eb); background:rgba(0,0,0,0.02);">
+        <div style="font-weight:600; font-size:12px; margin-bottom:8px;">+ New Passenger Record</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px;">
+          <input type="text" id="new_pax_name_${b.id}" placeholder="Full Name *" style="padding:5px 8px; font-size:12px;" />
+          <input type="text" id="new_pax_country_${b.id}" placeholder="Country / Nationality" style="padding:5px 8px; font-size:12px;" />
+          <div>
+            <label class="subtitle" style="font-size:10px; display:block;">Date of Birth</label>
+            <input type="date" id="new_pax_dob_${b.id}" style="width:100%; padding:4px 6px; font-size:12px;" />
+          </div>
+          <input type="text" id="new_pax_passport_${b.id}" placeholder="Passport Number" style="padding:5px 8px; font-size:12px;" />
+          <div>
+            <label class="subtitle" style="font-size:10px; display:block;">Passport Expiry</label>
+            <input type="date" id="new_pax_expiry_${b.id}" style="width:100%; padding:4px 6px; font-size:12px;" />
+          </div>
+          <select id="new_pax_gender_${b.id}" style="padding:5px 8px; font-size:12px;">
+            <option value="">Gender...</option>
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+            <option value="Other">Other</option>
+          </select>
+          <input type="text" id="new_pax_mobile_${b.id}" placeholder="Mobile / WhatsApp" style="padding:5px 8px; font-size:12px;" />
+          <input type="email" id="new_pax_email_${b.id}" placeholder="Email" style="padding:5px 8px; font-size:12px;" />
+          <input type="text" id="new_pax_diet_${b.id}" placeholder="Dietary Requirements" style="padding:5px 8px; font-size:12px;" />
+          <input type="text" id="new_pax_med_${b.id}" placeholder="Medical Conditions" style="padding:5px 8px; font-size:12px;" />
+        </div>
+        <div style="display:flex; gap:8px; margin-top:10px;">
+          <button type="button" class="btn btn-primary btn-sm" onclick="createPassengerRecord(event, '${b.id}')">Save Passenger</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAddPassengerForm(event, '${b.id}', false)">Cancel</button>
+        </div>
+      </div>
+    `
+    : "";
+
   let paxBodyHtml = `<div class="empty-state">Loading passengers from CRM...</div>`;
   if (Array.isArray(pax)) {
     if (!pax.length) {
-      paxBodyHtml = `<div class="empty-state" style="padding:14px;">No passenger records linked to this Booking yet.</div>`;
+      paxBodyHtml = `${addPassengerFormHtml}<div class="empty-state" style="padding:14px;">No passenger records linked to this Booking yet.</div>`;
     } else {
-      const paxRows = pax.map((p) => {
+      const paxRows = pax.map((p, idx) => {
+        const paxKey = `${b.id}__${p.id || idx}`;
+        const isEditingThisPax = STATE.editingPassengerKey === paxKey;
+
+        if (isEditingThisPax) {
+          return `
+            <tr>
+              <td>
+                <input type="text" id="pax_edit_name_${paxKey}" value="${escapeHtml(p.Name || "")}" placeholder="Full Name" style="width:100%; padding:4px 6px; font-size:12px;" />
+              </td>
+              <td>
+                <input type="text" id="pax_edit_country_${paxKey}" value="${escapeHtml(p.Country || "")}" placeholder="Country" style="width:100%; padding:4px 6px; font-size:12px;" />
+              </td>
+              <td>
+                <input type="date" id="pax_edit_dob_${paxKey}" value="${escapeHtml(toIsoDateInput(p.Date_of_Birth))}" style="padding:4px 6px; font-size:12px;" />
+              </td>
+              <td>
+                <input type="text" id="pax_edit_passport_${paxKey}" value="${escapeHtml(p.Passport_Number || "")}" placeholder="Passport #" style="width:115px; padding:4px 6px; font-size:12px;" />
+              </td>
+              <td>
+                <input type="date" id="pax_edit_expiry_${paxKey}" value="${escapeHtml(toIsoDateInput(p.Passport_Expiry_Date))}" style="padding:4px 6px; font-size:12px;" />
+              </td>
+              <td>
+                <select id="pax_edit_gender_${paxKey}" style="padding:4px 6px; font-size:12px;">
+                  <option value="" ${!p.Gender ? "selected" : ""}>-</option>
+                  <option value="Male" ${p.Gender === "Male" ? "selected" : ""}>Male</option>
+                  <option value="Female" ${p.Gender === "Female" ? "selected" : ""}>Female</option>
+                  <option value="Other" ${p.Gender === "Other" ? "selected" : ""}>Other</option>
+                </select>
+              </td>
+              <td>
+                <input type="text" id="pax_edit_mobile_${paxKey}" value="${escapeHtml(p.Passenger_Mobile || "")}" placeholder="Mobile" style="width:100%; padding:4px 6px; font-size:12px; margin-bottom:4px;" />
+                <input type="email" id="pax_edit_email_${paxKey}" value="${escapeHtml(p.Email || "")}" placeholder="Email" style="width:100%; padding:4px 6px; font-size:12px;" />
+              </td>
+              <td>
+                <input type="text" id="pax_edit_diet_${paxKey}" value="${escapeHtml(p.Dietary_Requirements || "")}" placeholder="Diet" style="width:100%; padding:4px 6px; font-size:12px; margin-bottom:4px;" />
+                <input type="text" id="pax_edit_med_${paxKey}" value="${escapeHtml(p.Medical_Conditions || "")}" placeholder="Medical" style="width:100%; padding:4px 6px; font-size:12px;" />
+              </td>
+              <td style="white-space:nowrap;">
+                <button type="button" class="btn btn-primary btn-sm" onclick="savePassengerRowEdit(event, '${b.id}', '${p.id || ""}', ${idx})">Save</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="cancelEditPassengerRow(event)">✕</button>
+              </td>
+            </tr>
+          `;
+        }
+
         const alerts = [];
         if (p.Dietary_Requirements) alerts.push(`<span class="badge badge-warn">Diet: ${escapeHtml(p.Dietary_Requirements)}</span>`);
         if (p.Medical_Conditions) alerts.push(`<span class="badge badge-danger">Med: ${escapeHtml(p.Medical_Conditions)}</span>`);
@@ -750,27 +1248,31 @@ function renderExpandedBookingBody(b) {
         return `
           <tr>
             <td>
-              <strong><span class="copy-inline" onclick="copyText(event, '${escapeHtml(p.Name || "")}', 'Passenger Name')">${escapeHtml(p.Name || "-")}</span></strong>
+              <strong><span class="copy-inline" onclick="copyText(event, '${escapeJsAttr(p.Name || "")}', 'Passenger Name')">${escapeHtml(p.Name || "-")}</span></strong>
               ${p.Passenger_Type ? `<div class="product-clean-sub">${escapeHtml(p.Passenger_Type)}</div>` : ""}
             </td>
             <td>${escapeHtml(p.Country || "-")}</td>
-            <td class="mono">${escapeHtml(p.Date_of_Birth || "-")}</td>
+            <td>${escapeHtml(fmtDateDisplay(p.Date_of_Birth, "-"))}</td>
             <td class="mono">
-              ${p.Passport_Number ? `<span class="copy-inline" onclick="copyText(event, '${escapeHtml(p.Passport_Number)}', 'Passport Number')"><strong>${escapeHtml(p.Passport_Number)}</strong></span>` : `<span class="subtitle">No passport</span>`}
+              ${p.Passport_Number ? `<span class="copy-inline" onclick="copyText(event, '${escapeJsAttr(p.Passport_Number)}', 'Passport Number')"><strong>${escapeHtml(p.Passport_Number)}</strong></span>` : `<span class="subtitle">No passport</span>`}
             </td>
-            <td class="mono">${escapeHtml(p.Passport_Expiry_Date || "-")}</td>
+            <td>${escapeHtml(fmtDateDisplay(p.Passport_Expiry_Date, "-"))}</td>
             <td>${escapeHtml(p.Gender || "-")}</td>
             <td>
-              ${p.Passenger_Mobile ? `<div class="mono copy-inline" onclick="copyText(event, '${escapeHtml(p.Passenger_Mobile)}', 'Mobile')">${escapeHtml(p.Passenger_Mobile)}</div>` : ""}
-              ${p.Email ? `<div class="product-clean-sub copy-inline" onclick="copyText(event, '${escapeHtml(p.Email)}', 'Email')">${escapeHtml(p.Email)}</div>` : ""}
+              ${p.Passenger_Mobile ? `<div class="mono copy-inline" onclick="copyText(event, '${escapeJsAttr(p.Passenger_Mobile)}', 'Mobile')">${escapeHtml(p.Passenger_Mobile)}</div>` : ""}
+              ${p.Email ? `<div class="product-clean-sub copy-inline" onclick="copyText(event, '${escapeJsAttr(p.Email)}', 'Email')">${escapeHtml(p.Email)}</div>` : ""}
               ${!p.Passenger_Mobile && !p.Email ? `<span class="subtitle">-</span>` : ""}
             </td>
-            ${hasAnyHealthOrDiet ? `<td>${alerts.length ? alerts.join(" ") : `<span class="subtitle">—</span>`}</td>` : ""}
+            <td>${alerts.length ? alerts.join(" ") : `<span class="subtitle">—</span>`}</td>
+            <td>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="startEditPassengerRow(event, '${b.id}', '${p.id || ""}', ${idx})">Edit</button>
+            </td>
           </tr>
         `;
       }).join("");
 
       paxBodyHtml = `
+        ${addPassengerFormHtml}
         <table>
           <thead>
             <tr>
@@ -781,7 +1283,8 @@ function renderExpandedBookingBody(b) {
               <th>Passport Expiry</th>
               <th>Gender</th>
               <th>Mobile / Email</th>
-              ${hasAnyHealthOrDiet ? `<th>Dietary &amp; Medical</th>` : ""}
+              <th>Dietary &amp; Medical</th>
+              <th>Edit</th>
             </tr>
           </thead>
           <tbody>${paxRows}</tbody>
@@ -798,6 +1301,7 @@ function renderExpandedBookingBody(b) {
           ${hasAnyHealthOrDiet ? `<span class="badge badge-danger">⚠️ Dietary / Medical Info</span>` : ""}
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="toggleAddPassengerForm(event, '${b.id}', true)">+ Add Passenger</button>
           ${Array.isArray(pax) && pax.length ? `<button type="button" class="btn btn-secondary btn-sm" onclick="copyAllManifest(event, '${b.id}')">Copy All Manifest</button>` : ""}
           <span>${drawers.passengers ? "▲" : "▼"}</span>
         </div>
@@ -811,7 +1315,7 @@ function renderExpandedBookingBody(b) {
 
   if (dealAttachments.length) {
     const dealAttChips = dealAttachments.map((att) => `
-      <button type="button" class="attachment-chip" onclick="downloadCrmAttachment(event, '${b.id}', '${att.id}', '${escapeHtml(att.File_Name || "Attachment")}')">
+      <button type="button" class="attachment-chip" onclick="downloadCrmAttachment(event, '${b.id}', '${att.id}', '${escapeJsAttr(att.File_Name || "Attachment")}')">
         📎 ${escapeHtml(att.File_Name || "File")} ⬇
       </button>
     `).join("");
@@ -842,7 +1346,7 @@ function renderExpandedBookingBody(b) {
       const nAttHtml = nAtts.length
         ? `<div class="attachment-strip">
             ${nAtts.map((att) => `
-              <button type="button" class="attachment-chip" onclick="downloadCrmAttachment(event, '${b.id}', '${att.id}', '${escapeHtml(att.File_Name || "Attachment")}')">
+              <button type="button" class="attachment-chip" onclick="downloadCrmAttachment(event, '${b.id}', '${att.id}', '${escapeJsAttr(att.File_Name || "Attachment")}')">
                 📎 ${escapeHtml(att.File_Name || "Attached file")} ⬇
               </button>
             `).join("")}
@@ -853,7 +1357,7 @@ function renderExpandedBookingBody(b) {
       return `
         <div class="note-card">
           <div class="note-card-meta">
-            <span>${escapeHtml(n.Note_Title || "Note")} · ${escapeHtml(n.Created_By?.name || "")} (${(n.Created_Time || "").slice(0, 10)})</span>
+            <span>${escapeHtml(n.Note_Title || "Note")} · ${escapeHtml(n.Created_By?.name || "")} (${escapeHtml(fmtDateDisplay(n.Created_Time, ""))})</span>
             ${nAtts.length ? `<span class="badge badge-info">📎 ${nAtts.length} Attachment(s)</span>` : ""}
           </div>
           <div class="note-card-text">${sanitizeNoteHtml(n.Note_Content || "")}</div>
@@ -899,7 +1403,7 @@ function renderExpandedBookingBody(b) {
 
           return `
             <tr>
-              <td class="mono"><strong>${op.Bill_Date || "-"}</strong><br/><span class="subtitle">${escapeHtml(op.Name || "New")}</span></td>
+              <td><strong>${escapeHtml(fmtDateDisplay(op.Bill_Date, "-"))}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "New")}</span></td>
               <td><strong>${escapeHtml(op.Supplier_Vendor_Name?.name || "No Supplier")}</strong><br/><span class="mono subtitle">${escapeHtml(op.Xero_Bill_Name || "")}</span></td>
               <td>
                 <div class="product-clean-title">${escapeHtml(cleanProd.title)}</div>
@@ -908,7 +1412,7 @@ function renderExpandedBookingBody(b) {
               <td><span class="badge ${resBadge}">${escapeHtml(op.Bill_Status || "N/A")}</span></td>
               <td>
                 <span class="badge ${billPayBadge}">${escapeHtml(op.Payment_Status || "Awaiting Payment")}</span>
-                ${op.Expected_Payment_Date ? `<div class="product-clean-sub">Due: ${op.Expected_Payment_Date}</div>` : ""}
+                ${op.Expected_Payment_Date ? `<div class="product-clean-sub">Due: ${escapeHtml(fmtDateDisplay(op.Expected_Payment_Date))}</div>` : ""}
               </td>
               <td>
                 <button class="btn btn-secondary btn-sm" onclick="openPayModal('${b.id}', '${op.id}')">Manage / Pay</button>
@@ -957,20 +1461,21 @@ function renderFinanceOverview() {
   }
 
   const rows = STATE.filteredBookings.map((b) => {
+    const full = STATE.dealFullRecord[b.id] || b;
     const ops = STATE.operationsByDeal[b.id] || [];
     const hasLoadedOps = Array.isArray(STATE.operationsByDeal[b.id]);
     const totalOpsCost = ops.reduce((acc, op) => acc + (parseFloat(op.Grand_Total) || 0), 0);
-    const grossSale = parseFloat(b.Total_Gross_Price || b.Amount) || 0;
-    const netSale = parseFloat(b.Total_Net_Amount || b.Amount) || 0;
-    const quotedCost = parseFloat(b.Total_Trip_Cost2) || 0;
+    const grossSale = parseFloat(full.Total_Gross_Price || full.Amount) || 0;
+    const netSale = parseFloat(full.Total_Net_Amount || full.Amount) || 0;
+    const quotedCost = parseFloat(full.Total_Trip_Cost2) || 0;
     const realMargin = netSale > 0 && hasLoadedOps ? (((netSale - totalOpsCost) / netSale) * 100).toFixed(1) : null;
-    const payBadge = b.Booking_Payment_Status === "Paid" ? "badge-ok" : "badge-warn";
+    const payBadge = full.Booking_Payment_Status === "Paid" ? "badge-ok" : "badge-warn";
 
     return `
       <tr>
-        <td class="mono"><strong>#${escapeHtml(b.Booking_Number || "N/A")}</strong><br/>${getPlatformBadgeHtml(b.Sales_Platform)}</td>
-        <td><strong>${escapeHtml(b.Deal_Name || "Untitled")}</strong><br/><span class="subtitle">Start: ${b.Trip_Start_Date || "-"}</span></td>
-        <td><span class="badge ${payBadge}">${escapeHtml(b.Booking_Payment_Status || "Unpaid")}</span></td>
+        <td class="mono"><strong>#${escapeHtml(full.Booking_Number || "N/A")}</strong><br/>${getPlatformBadgeHtml(full.Sales_Platform)}</td>
+        <td><strong>${escapeHtml(full.Deal_Name || "Untitled")}</strong><br/><span class="subtitle">Start: ${escapeHtml(fmtDateDisplay(full.Trip_Start_Date, "-"))}</span></td>
+        <td><span class="badge ${payBadge}">${escapeHtml(full.Booking_Payment_Status || "Unpaid")}</span></td>
         <td>${fmtMoney(grossSale)}</td>
         <td><strong>${fmtMoney(netSale)}</strong></td>
         <td>${fmtMoney(quotedCost)}</td>
@@ -1065,7 +1570,7 @@ function addBulkRow() {
     .join("");
 
   tr.innerHTML = `
-    <td><input type="date" class="row-date" value="${b.Trip_Start_Date || ""}" required /></td>
+    <td><input type="date" class="row-date" value="${toIsoDateInput(b.Trip_Start_Date)}" required /></td>
     <td>
       <input type="text" class="row-vendor-input" list="dl_v_${rowUid}" placeholder="Type or select supplier..." autocomplete="off" style="min-width:190px;" />
       <input type="hidden" class="row-vendor" />
@@ -1249,7 +1754,7 @@ window.openPayModal = function (dealId, opId) {
   $("paidNowFields")?.classList.add("hidden");
 
   const today = new Date().toISOString().split("T")[0];
-  if ($("payExpectedDate")) $("payExpectedDate").value = op.Expected_Payment_Date || today;
+  if ($("payExpectedDate")) $("payExpectedDate").value = toIsoDateInput(op.Expected_Payment_Date) || today;
   if ($("payDate")) $("payDate").value = today;
   if ($("payAmount")) $("payAmount").value = op.Grand_Total || 0;
 
