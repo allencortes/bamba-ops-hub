@@ -1052,7 +1052,7 @@ window.assignBookingOwner = async function (dealId, newOwnerId) {
   }
 };
 
-// --- SUBHEADER QUICK EDIT (Pick-up, Accommodation, Flights, URL) ---
+// --- SUBHEADER QUICK EDIT (Pick-up, Accommodation, Flights) ---
 window.toggleEditSubheader = function (e, dealId, enable) {
   if (e) e.stopPropagation();
   STATE.editingDealId = enable ? dealId : null;
@@ -1064,17 +1064,11 @@ window.saveSubheaderDetails = async function (e, dealId) {
 
   const pickupVal = ($(`edit_pickup_${dealId}`)?.value || "").trim();
   const flightsVal = ($(`edit_flights_${dealId}`)?.value || "").trim();
-  let urlVal = ($(`edit_url_${dealId}`)?.value || "").trim();
-
-  if (urlVal && !/^https?:\/\//i.test(urlVal)) {
-    urlVal = "https://" + urlVal;
-  }
 
   const payload = {
     id: dealId,
     Accommodation_Pick_up_Point: pickupVal,
-    Flight_Details: flightsVal,
-    Travefy_URL: urlVal
+    Flight_Details: flightsVal
   };
 
   try {
@@ -1089,17 +1083,15 @@ window.saveSubheaderDetails = async function (e, dealId) {
     if (booking) {
       booking.Accommodation_Pick_up_Point = pickupVal;
       booking.Flight_Details = flightsVal;
-      booking.Travefy_URL = urlVal;
     }
     if (STATE.dealFullRecord[dealId]) {
       STATE.dealFullRecord[dealId].Accommodation_Pick_up_Point = pickupVal;
       STATE.dealFullRecord[dealId].Flight_Details = flightsVal;
-      STATE.dealFullRecord[dealId].Travefy_URL = urlVal;
     }
 
     STATE.editingDealId = null;
     renderBookingsAccordion();
-    showToast("Pick-up, Flights & URL updated!");
+    showToast("Pick-up & Flights updated!");
   } catch (err) {
     console.error("Error updating subheader details:", err);
     showToast("Could not save Booking details.");
@@ -1547,10 +1539,6 @@ function renderExpandedBookingBody(b) {
     ? STATE.crmUsers.map((u) => `<option value="${u.id}" ${u.id === currentOwnerId ? "selected" : ""}>${escapeHtml(u.full_name)}</option>`).join("")
     : `<option value="${currentOwnerId}">${escapeHtml(full.Owner?.name || "Unassigned")}</option>`;
 
-  const travefyBtn = full.Travefy_URL
-    ? `<a href="${escapeHtml(full.Travefy_URL)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Open Travefy ↗</a>`
-    : `<span class="badge badge-warn">No Travefy URL</span>`;
-
   const hasAnyHealthOrDiet = Array.isArray(pax) && pax.some(
     (p) => Boolean((p.Dietary_Requirements && String(p.Dietary_Requirements).trim()) || (p.Medical_Conditions && String(p.Medical_Conditions).trim()))
   );
@@ -1566,10 +1554,6 @@ function renderExpandedBookingBody(b) {
         <div class="meta-item">
           <span class="meta-label">Flight Details</span>
           <input type="text" id="edit_flights_${b.id}" value="${escapeHtml(full.Flight_Details || "")}" placeholder="Arrival / departure flights..." style="width:100%; padding:5px 8px; font-size:12px;" />
-        </div>
-        <div class="meta-item">
-          <span class="meta-label">Travefy / Itinerary URL</span>
-          <input type="text" id="edit_url_${b.id}" value="${escapeHtml(full.Travefy_URL || "")}" placeholder="https://..." style="width:100%; padding:5px 8px; font-size:12px;" />
         </div>
         <div class="meta-item" style="display:flex; align-items:flex-end; gap:6px;">
           <button type="button" class="btn btn-primary btn-sm" onclick="saveSubheaderDetails(event, '${b.id}')">Save Details</button>
@@ -1596,9 +1580,8 @@ function renderExpandedBookingBody(b) {
           <span class="meta-val">${escapeHtml(full.Flight_Details || "Not specified")}</span>
         </div>
         <div class="meta-item">
-          <span class="meta-label">Itinerary URL / Sales Order</span>
+          <span class="meta-label">Sales Order / Trip Type</span>
           <span class="meta-val">
-            ${full.Travefy_URL ? `<a href="${escapeHtml(full.Travefy_URL)}" target="_blank" rel="noopener noreferrer">${escapeHtml(full.Travefy_URL)}</a> · ` : ""}
             ${escapeHtml(full.Sales_Order_Number || "No SO")} · ${escapeHtml(full.Interested_In_Services || "Tailor-Made")}
           </span>
         </div>
@@ -1649,7 +1632,6 @@ function renderExpandedBookingBody(b) {
           ${!isEditingDeal ? `<button type="button" class="btn btn-secondary btn-sm" onclick="toggleEditSubheader(event, '${b.id}', true)">Edit Details</button>` : ""}
           <button type="button" class="btn btn-secondary btn-sm" onclick="openLoadServicesModal(event, '${b.id}')">📋 Load Services</button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="openDealInCrm(event, '${b.id}')">Open in CRM ↗</button>
-          ${travefyBtn}
           <button class="btn btn-primary btn-sm" onclick="openBulkModal('${b.id}')">+ Add Operations</button>
         </div>
       </div>
