@@ -1,9 +1,18 @@
-// OPS Hub v2 — Step 3 (Operations: Nov 1 Start Date, MMM D YYYY Dates, Subheader Edit, Passenger CRUD, Management Owner Lock, Service Checklist Note & Multi-Service Progress)
+// OPS Hub v2 — Step 4 (Per-User Filters, Date Range From/To, Editable Operations_Stage, Dual Pax Phones & Operation Service Schedules)
 const DEFAULT_START_DATE = "2026-11-01";
 const CHECKLIST_NOTE_TITLE = "[OPS_CHECKLIST]";
 const MANAGEMENT_PROFILES = ["administrator", "management"];
 const MANAGEMENT_ROLES = ["manager", "management", "ceo", "director"];
 const MANAGEMENT_EMAILS = ["allen@bambatravel.com"];
+
+const OPERATIONS_STAGES = [
+  "Nothing is booked",
+  "Working on trip bookings",
+  "Booked all services",
+  "Working on Booking Confirmation",
+  "Booking Confirmation Sent - Missing Details",
+  "Booking Confirmation Sent"
+];
 
 const STATE = {
   bookings: [],
@@ -16,7 +25,9 @@ const STATE = {
   loadServicesMode: "TEXT",
   parsedPreviewServices: [],
   pendingChecklistItemId: null,
+  editingOpRecord: null,
   operationsByDeal: {},
+  opFullRecord: {},
   passengersByDeal: {},
   notesByDeal: {},
   checklistByDeal: {},
@@ -85,7 +96,6 @@ function parseDateSafe(dateVal) {
     const p1 = parseInt(slashMatch[1], 10);
     const p2 = parseInt(slashMatch[2], 10);
     const y = parseInt(slashMatch[3], 10);
-    // Support YYYY/MM/DD or MM/DD/YYYY (and DD/MM/YYYY if first > 12)
     const m = (p1 > 12 ? p2 : p1) - 1;
     const d = p1 > 12 ? p1 : p2;
     const dt = new Date(y, m, d);
@@ -114,6 +124,74 @@ function fmtDateDisplay(dateVal, fallback = "-") {
     day: "numeric",
     year: "numeric"
   });
+}
+
+// --- PER-USER FILTER PREFERENCES (localStorage) ---
+function getUserFilterStorageKey() {
+  const uid = STATE.currentUser?.id || STATE.currentUser?.email || "default";
+  return `ops_hub_filters_${uid}`;
+}
+
+function saveUserFilterPrefs() {
+  try {
+    const prefs = {
+      platform: $("filterPlatform")?.value || "ALL",
+      owner: $("filterOwner")?.value || "ALL",
+      startDateWin: $("filterStartDate")?.value || "ALL",
+      sinceDate: $("filterSinceDate")?.value || DEFAULT_START_DATE,
+      toDate: $("filterToDate")?.value || ""
+    };
+    localStorage.setItem(getUserFilterStorageKey(), JSON.stringify(prefs));
+  } catch (e) {
+    console.warn("Could not save filter prefs:", e);
+  }
+}
+
+function loadUserFilterPrefs() {
+  try {
+    const raw = localStorage.getItem(getUserFilterStorageKey());
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function applySavedFilterPrefs(prefs) {
+  if (!prefs) return;
+  if ($("filterPlatform") && prefs.platform) {
+    if ([...$("filterPlatform").options].some((o) => o.value === prefs.platform)) {
+      $("filterPlatform").value = prefs.platform;
+    }
+  }
+  if ($("filterStartDate") && prefs.startDateWin) {
+    if ([...$("filterStartDate").options].some((o) => o.value === prefs.startDateWin)) {
+      $("filterStartDate").value = prefs.startDateWin;
+    }
+  }
+  if ($("filterSinceDate") && prefs.sinceDate) {
+    $("filterSinceDate").value = prefs.sinceDate;
+  }
+  if ($("filterToDate") && typeof prefs.toDate === "string") {
+    $("filterToDate").value = prefs.toDate;
+  }
+}
+
+function resetAllFilters() {
+  try {
+    localStorage.removeItem(getUserFilterStorageKey());
+  } catch (e) {
+    // ignore
+  }
+  if ($("filterStage")) $("filterStage").value = "Booking Won";
+  if ($("filterPlatform")) $("filterPlatform").value = "ALL";
+  if ($("filterOwner")) $("filterOwner").value = "ALL";
+  if ($("filterStartDate")) $("filterStartDate").value = "ALL";
+  if ($("filterSinceDate")) $("filterSinceDate").value = DEFAULT_START_DATE;
+  if ($("filterToDate")) $("filterToDate").value = "";
+  if ($("searchInput")) $("searchInput").value = "";
+  loadBookings();
+  showToast("Filters reset to default.");
 }
 
 function canManageOwner() {
@@ -211,6 +289,14 @@ function getPlatformBadgeHtml(platform) {
   return `<span class="plat-badge ${cls}">${escapeHtml(p)}</span>`;
 }
 
+function getOpsStageClass(stage) {
+  const s = (stage || "").trim();
+  if (!s || s === "Nothing is booked") return "stage-danger";
+  if (s === "Booking Confirmation Sent") return "stage-ok";
+  if (s === "Booked all services" || s === "Working on Booking Confirmation") return "stage-info";
+  return "stage-warn";
+}
+
 function parseCleanProductDetails(rawText) {
   if (!rawText) return { title: "No service details", meta: "", items: [] };
 
@@ -230,7 +316,6 @@ function parseCleanProductDetails(rawText) {
     clean = clean.replace(/\s*\|\s*[a-f0-9]{15,}:.*$/i, "");
     clean = clean.replace(/\bnull\b/gi, "").replace(/\s{2,}/g, " ").trim();
 
-    // Split bullet-separated grouped services if stored on a single line
     const parts = clean
       .split(/\s+•\s+/)
       .map((p) => p.trim())
@@ -246,6 +331,54 @@ function parseCleanProductDetails(rawText) {
   const titles = cleanedItems.map((i) => i.name).join(" • ");
   const paxList = [...new Set(cleanedItems.map((i) => i.pax).filter(Boolean))].join(", ");
   return { title: titles, meta: paxList, items: cleanedItems };
+}
+
+function renderOperationServicesCell(op) {
+  const fullOp = STATE.opFullRecord[op.id];
+  if (fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length > 0) {
+    const linesHtml = fullOp.Product_Details.map((row) => {
+      const prodName = row.Product_Name?.name || row.Product_Name || "Service";
+      const startDt = row.Trip_Start_Date ? fmtDateDisplay(row.Trip_Start_Date) : "";
+      const startTime = (row.Start_Time || "").trim();
+      const qty = row.Qty ? `${row.Qty} PAX` : "";
+      const timeBadge = startTime
+        ? `<span class="time-pill">🕒 ${escapeHtml(startTime)}</span>`
+        : `<span class="time-pill pending">Time TBD</span>`;
+
+      return `
+        <div class="service-line-item">
+          ${startDt ? `<span class="badge">${escapeHtml(startDt)}</span>` : ""}
+          <strong>${escapeHtml(prodName)}</strong>
+          ${timeBadge}
+          ${qty ? `<span class="subtitle">(${escapeHtml(qty)})</span>` : ""}
+        </div>
+      `;
+    }).join("");
+
+    const notesHtml = fullOp.Details_of_Product
+      ? `<div class="product-clean-sub" style="margin-top:4px;">📝 ${escapeHtml(fullOp.Details_of_Product)}</div>`
+      : "";
+
+    return `<div class="service-line-list">${linesHtml}</div>${notesHtml}`;
+  }
+
+  const cleanProd = parseCleanProductDetails(op.Product_Deatails);
+  const itemsHtml = cleanProd.items.length
+    ? `<div class="service-line-list">
+        ${cleanProd.items.map((it) => `
+          <div class="service-line-item">
+            <strong>${escapeHtml(it.name)}</strong>
+            ${it.pax ? `<span class="subtitle">(${escapeHtml(it.pax)})</span>` : ""}
+          </div>
+        `).join("")}
+      </div>`
+    : `<div class="product-clean-title">${escapeHtml(cleanProd.title)}</div>`;
+
+  const notesHtml = op.Details_of_Product
+    ? `<div class="product-clean-sub" style="margin-top:4px;">📝 ${escapeHtml(op.Details_of_Product)}</div>`
+    : "";
+
+  return `${itemsHtml}${notesHtml}`;
 }
 
 function computeOperationsProgress(ops) {
@@ -269,8 +402,11 @@ function computeOperationsProgress(ops) {
   let weightedPoints = 0;
 
   ops.forEach((op) => {
+    const fullOp = STATE.opFullRecord[op.id];
     const parsed = parseCleanProductDetails(op.Product_Deatails);
-    const serviceCount = Math.max(1, parsed.items.length || 1);
+    const serviceCount = fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length
+      ? fullOp.Product_Details.length
+      : Math.max(1, parsed.items.length || 1);
     const status = (op.Bill_Status || "").trim();
     const payStatus = (op.Payment_Status || "").trim();
 
@@ -326,7 +462,6 @@ function serializeChecklistNote(items) {
 
 function parseChecklistNoteContent(rawContent) {
   if (!rawContent) return [];
-  // Strip any HTML tags if CRM stored rich text
   const tmp = document.createElement("div");
   tmp.innerHTML = String(rawContent).replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n").replace(/<\/li>/gi, "\n");
   const plain = tmp.textContent || tmp.innerText || "";
@@ -383,7 +518,6 @@ function extractChecklistFromNotes(dealId, notesArray) {
     return notesArray;
   }
 
-  // Use the latest checklist note
   const latestNote = checklistNotes[0];
   const parsedItems = parseChecklistNoteContent(latestNote.Note_Content || "");
   STATE.checklistByDeal[dealId] = {
@@ -391,7 +525,6 @@ function extractChecklistFromNotes(dealId, notesArray) {
     items: parsedItems
   };
 
-  // Return regular notes excluding internal checklist notes
   return notesArray.filter(
     (n) => (n.Note_Title || "").trim().toUpperCase() !== CHECKLIST_NOTE_TITLE
   );
@@ -547,9 +680,12 @@ async function initApp() {
     $("filterSinceDate").value = DEFAULT_START_DATE;
   }
 
+  const savedPrefs = loadUserFilterPrefs();
+  applySavedFilterPrefs(savedPrefs);
+
   populatePayModalAccounts();
   bindEvents();
-  await Promise.all([loadBookings(), loadVendorsAndProducts()]);
+  await Promise.all([loadBookings(savedPrefs?.owner || "ALL"), loadVendorsAndProducts()]);
 }
 
 function populatePayModalAccounts() {
@@ -564,11 +700,40 @@ function populatePayModalAccounts() {
 let searchDebounceTimer = null;
 
 function bindEvents() {
-  if ($("filterStage")) $("filterStage").addEventListener("change", loadBookings);
-  if ($("filterSinceDate")) $("filterSinceDate").addEventListener("change", loadBookings);
-  if ($("filterPlatform")) $("filterPlatform").addEventListener("change", applyFilters);
-  if ($("filterOwner")) $("filterOwner").addEventListener("change", applyFilters);
-  if ($("filterStartDate")) $("filterStartDate").addEventListener("change", applyFilters);
+  if ($("filterStage")) $("filterStage").addEventListener("change", () => loadBookings());
+  if ($("filterSinceDate")) {
+    $("filterSinceDate").addEventListener("change", () => {
+      saveUserFilterPrefs();
+      loadBookings();
+    });
+  }
+  if ($("filterToDate")) {
+    $("filterToDate").addEventListener("change", () => {
+      saveUserFilterPrefs();
+      applyFilters();
+    });
+  }
+  if ($("filterPlatform")) {
+    $("filterPlatform").addEventListener("change", () => {
+      saveUserFilterPrefs();
+      applyFilters();
+    });
+  }
+  if ($("filterOwner")) {
+    $("filterOwner").addEventListener("change", () => {
+      saveUserFilterPrefs();
+      applyFilters();
+    });
+  }
+  if ($("filterStartDate")) {
+    $("filterStartDate").addEventListener("change", () => {
+      saveUserFilterPrefs();
+      applyFilters();
+    });
+  }
+  if ($("btnResetFilters")) {
+    $("btnResetFilters").addEventListener("click", resetAllFilters);
+  }
   if ($("searchInput")) {
     $("searchInput").addEventListener("input", () => {
       applyFilters();
@@ -584,6 +749,7 @@ function bindEvents() {
   if ($("btnRefresh")) {
     $("btnRefresh").addEventListener("click", () => {
       STATE.operationsByDeal = {};
+      STATE.opFullRecord = {};
       STATE.passengersByDeal = {};
       STATE.notesByDeal = {};
       STATE.checklistByDeal = {};
@@ -624,7 +790,7 @@ function bindEvents() {
   if ($("btnAddRow")) $("btnAddRow").onclick = () => addBulkRow();
   if ($("submitBulk")) $("submitBulk").onclick = submitBulkOperations;
 
-  // Pay Modal events
+  // Pay & Schedule Modal events
   if ($("closePayModal")) $("closePayModal").onclick = () => toggleModal("payModal", false);
   if ($("cancelPay")) $("cancelPay").onclick = () => toggleModal("payModal", false);
   if ($("payActionType")) {
@@ -664,7 +830,7 @@ async function fetchPaginatedDeals(criteriaQuery) {
   return all;
 }
 
-async function loadBookings() {
+async function loadBookings(preferredOwnerId = null) {
   const accordion = $("bookingsAccordion");
   if (accordion) accordion.innerHTML = `<div class="empty-state">Loading Bookings...</div>`;
 
@@ -674,7 +840,6 @@ async function loadBookings() {
   try {
     let rows = [];
     if (sinceDate) {
-      // Subtract 1 day for Zoho greater_than so the exact selected date is inclusive
       const cutoffDt = parseDateSafe(sinceDate);
       const dayBeforeDt = cutoffDt ? new Date(cutoffDt.getFullYear(), cutoffDt.getMonth(), cutoffDt.getDate() - 1) : null;
       const dayBeforeIso = dayBeforeDt ? toIsoDateInput(dayBeforeDt) : sinceDate;
@@ -700,7 +865,7 @@ async function loadBookings() {
     });
     STATE.bookings = Array.from(map.values());
 
-    buildOwnerFilterAndWorkload();
+    buildOwnerFilterOptions(preferredOwnerId);
     applyFilters();
   } catch (err) {
     console.error("Error loading Deals:", err);
@@ -738,7 +903,7 @@ async function searchHistoricalBookings(term) {
     });
 
     if (added > 0) {
-      buildOwnerFilterAndWorkload();
+      buildOwnerFilterOptions();
       applyFilters();
       showToast(`Found ${added} matching Booking(s) from CRM archive.`);
     }
@@ -747,40 +912,23 @@ async function searchHistoricalBookings(term) {
   }
 }
 
-function buildOwnerFilterAndWorkload() {
-  const counts = {};
+function buildOwnerFilterOptions(preferredOwnerId = null) {
+  const ownersMap = {};
   STATE.bookings.forEach((b) => {
     const ownerId = b.Owner?.id || "UNASSIGNED";
     const ownerName = b.Owner?.name || "Unassigned";
-    if (!counts[ownerId]) counts[ownerId] = { id: ownerId, name: ownerName, count: 0 };
-    counts[ownerId].count++;
+    if (!ownersMap[ownerId]) ownersMap[ownerId] = { id: ownerId, name: ownerName };
   });
 
-  const ownerList = Object.values(counts).sort((a, b) => b.count - a.count);
+  const ownerList = Object.values(ownersMap).sort((a, b) => a.name.localeCompare(b.name));
   const sel = $("filterOwner");
   if (sel) {
-    const current = sel.value || "ALL";
-    sel.innerHTML = `<option value="ALL">All Coordinators (${STATE.bookings.length})</option>` +
-      ownerList.map((o) => `<option value="${o.id}">${escapeHtml(o.name)} (${o.count})</option>`).join("");
+    const current = preferredOwnerId || sel.value || "ALL";
+    sel.innerHTML = `<option value="ALL">All Coordinators</option>` +
+      ownerList.map((o) => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join("");
     if ([...sel.options].some((opt) => opt.value === current)) sel.value = current;
   }
-
-  const workloadBar = $("ownerWorkloadBar");
-  if (workloadBar) {
-    workloadBar.innerHTML = ownerList.map((o) => `
-      <span class="workload-chip" onclick="quickFilterOwner('${o.id}')">
-        <strong>${escapeHtml(o.name)}:</strong> ${o.count}
-      </span>
-    `).join("");
-  }
 }
-
-window.quickFilterOwner = function (ownerId) {
-  const sel = $("filterOwner");
-  if (!sel) return;
-  sel.value = sel.value === ownerId ? "ALL" : ownerId;
-  applyFilters();
-};
 
 function matchesStartDateWindow(dateStr, windowKey) {
   if (windowKey === "ALL") return true;
@@ -804,24 +952,69 @@ function matchesStartDateWindow(dateStr, windowKey) {
   return true;
 }
 
+function matchesDateRange(dateStr, fromIso, toIso) {
+  if (!fromIso && !toIso) return true;
+  const target = parseDateSafe(dateStr);
+  if (!target) return false;
+
+  if (fromIso) {
+    const fromDt = parseDateSafe(fromIso);
+    if (fromDt && target < fromDt) return false;
+  }
+  if (toIso) {
+    const toDt = parseDateSafe(toIso);
+    if (toDt && target > toDt) return false;
+  }
+  return true;
+}
+
 function applyFilters() {
   const platform = $("filterPlatform")?.value || "ALL";
   const owner = $("filterOwner")?.value || "ALL";
   const startWin = $("filterStartDate")?.value || "ALL";
+  const fromIso = $("filterSinceDate")?.value || "";
+  const toIso = $("filterToDate")?.value || "";
   const q = ($("searchInput")?.value || "").trim().toLowerCase();
 
   STATE.filteredBookings = STATE.bookings.filter((b) => {
     const matchPlat = platform === "ALL" || b.Sales_Platform === platform;
     const bOwnerId = b.Owner?.id || "UNASSIGNED";
     const matchOwner = owner === "ALL" || bOwnerId === owner;
-    const matchDate = matchesStartDateWindow(b.Trip_Start_Date, startWin);
+    const matchDateWin = matchesStartDateWindow(b.Trip_Start_Date, startWin);
+    const matchRange = matchesDateRange(b.Trip_Start_Date, fromIso, toIso);
     const text = `${b.Booking_Number || ""} ${b.Deal_Name || ""} ${b.Contact_Name?.name || ""} ${b.Owner?.name || ""}`.toLowerCase();
-    return matchPlat && matchOwner && matchDate && text.includes(q);
+    return matchPlat && matchOwner && matchDateWin && matchRange && text.includes(q);
   });
 
   renderBookingsAccordion();
   if (STATE.activeTab === "finance") renderFinanceOverview();
 }
+
+window.updateBookingOpsStage = async function (e, dealId, newStage) {
+  if (e) e.stopPropagation();
+  try {
+    showToast("Updating Operations Stage...");
+    await ZOHO.CRM.API.updateRecord({
+      Entity: "Deals",
+      APIData: {
+        id: dealId,
+        Operations_Stage: newStage || null
+      },
+      Trigger: ["workflow"]
+    });
+
+    const booking = STATE.bookings.find((b) => b.id === dealId);
+    if (booking) booking.Operations_Stage = newStage;
+    if (STATE.dealFullRecord[dealId]) STATE.dealFullRecord[dealId].Operations_Stage = newStage;
+
+    renderBookingsAccordion();
+    showToast(`Operations Stage updated to "${newStage || "None"}"`);
+  } catch (err) {
+    console.error("Error updating Operations_Stage:", err);
+    showToast("Could not update Operations Stage.");
+    renderBookingsAccordion();
+  }
+};
 
 function renderBookingsAccordion() {
   const countEl = $("bookingsCount");
@@ -837,9 +1030,16 @@ function renderBookingsAccordion() {
   accordion.innerHTML = STATE.filteredBookings.map((b) => {
     const full = STATE.dealFullRecord[b.id] || b;
     const isExpanded = STATE.expandedBookingId === b.id;
-    const opsBadge = full.Operations_Stage === "Nothing is booked" ? "badge-danger" : "badge-info";
-    const clientPayBadge = full.Booking_Payment_Status === "Paid" ? "badge-ok" : "badge-warn";
+    const currentStage = (full.Operations_Stage || "").trim();
+    const stageCls = getOpsStageClass(currentStage);
     const ownerName = full.Owner?.name || "Unassigned";
+
+    const stageOptionsHtml = [
+      `<option value="" ${!currentStage ? "selected" : ""}>- None -</option>`,
+      ...OPERATIONS_STAGES.map(
+        (st) => `<option value="${escapeHtml(st)}" ${currentStage === st ? "selected" : ""}>${escapeHtml(st)}</option>`
+      )
+    ].join("");
 
     const loadedOps = STATE.operationsByDeal[b.id];
     const progressHtml = Array.isArray(loadedOps) && loadedOps.length
@@ -871,8 +1071,14 @@ function renderBookingsAccordion() {
           </div>
 
           <div class="acc-status-col">
-            <span class="badge ${opsBadge}">${escapeHtml(full.Operations_Stage || "Pending")}</span>
-            <span class="badge ${clientPayBadge}">Client: ${escapeHtml(full.Booking_Payment_Status || "Unpaid")}</span>
+            <select
+              class="ops-stage-select ${stageCls}"
+              title="Change Operations Stage"
+              onclick="event.stopPropagation()"
+              onchange="updateBookingOpsStage(event, '${b.id}', this.value)"
+            >
+              ${stageOptionsHtml}
+            </select>
             ${progressHtml}
           </div>
 
@@ -944,6 +1150,7 @@ async function fetchOperationsForDeal(dealId) {
     });
     if (relRes && relRes.data) {
       STATE.operationsByDeal[dealId] = relRes.data;
+      await hydrateOperationsSubforms(relRes.data);
       return;
     }
     throw new Error("Fallback search");
@@ -953,8 +1160,27 @@ async function fetchOperationsForDeal(dealId) {
       Type: "criteria",
       Query: `(Booking_Name:equals:${dealId})`
     });
-    STATE.operationsByDeal[dealId] = (searchRes && searchRes.data) ? searchRes.data : [];
+    const list = (searchRes && searchRes.data) ? searchRes.data : [];
+    STATE.operationsByDeal[dealId] = list;
+    await hydrateOperationsSubforms(list);
   }
+}
+
+async function hydrateOperationsSubforms(opsList) {
+  if (!Array.isArray(opsList) || !opsList.length) return;
+  await Promise.all(
+    opsList.map(async (op) => {
+      if (!op?.id) return;
+      try {
+        const res = await ZOHO.CRM.API.getRecord({ Entity: "Bills", RecordID: op.id });
+        if (res?.data?.[0]) {
+          STATE.opFullRecord[op.id] = res.data[0];
+        }
+      } catch (err) {
+        console.warn("Could not hydrate operation subform:", op.id, err);
+      }
+    })
+  );
 }
 
 async function fetchPassengersForDeal(dealId) {
@@ -1042,7 +1268,7 @@ window.assignBookingOwner = async function (dealId, newOwnerId) {
     if (booking) booking.Owner = ownerPayload;
     if (STATE.dealFullRecord[dealId]) STATE.dealFullRecord[dealId].Owner = ownerPayload;
 
-    buildOwnerFilterAndWorkload();
+    buildOwnerFilterOptions();
     renderBookingsAccordion();
     showToast(`Assigned to ${userObj?.full_name || "coordinator"}`);
   } catch (err) {
@@ -1125,6 +1351,7 @@ window.createPassengerRecord = async function (e, dealId) {
   const expiryVal = ($(`new_pax_expiry_${dealId}`)?.value || "").trim();
   const genderVal = ($(`new_pax_gender_${dealId}`)?.value || "").trim();
   const mobileVal = ($(`new_pax_mobile_${dealId}`)?.value || "").trim();
+  const phoneVal = ($(`new_pax_phone_${dealId}`)?.value || "").trim();
   const emailVal = ($(`new_pax_email_${dealId}`)?.value || "").trim();
   const dietVal = ($(`new_pax_diet_${dealId}`)?.value || "").trim();
   const medVal = ($(`new_pax_med_${dealId}`)?.value || "").trim();
@@ -1139,6 +1366,7 @@ window.createPassengerRecord = async function (e, dealId) {
   if (expiryVal) recordData.Passport_Expiry_Date = expiryVal;
   if (genderVal) recordData.Gender = genderVal;
   if (mobileVal) recordData.Passenger_Mobile = mobileVal;
+  if (phoneVal) recordData.Passenger_Phone = phoneVal;
   if (emailVal) recordData.Email = emailVal;
   if (dietVal) recordData.Dietary_Requirements = dietVal;
   if (medVal) recordData.Medical_Conditions = medVal;
@@ -1200,6 +1428,7 @@ window.savePassengerRowEdit = async function (e, dealId, passengerId, rowIndex) 
     Passport_Expiry_Date: ($(`pax_edit_expiry_${key}`)?.value || "").trim() || null,
     Gender: ($(`pax_edit_gender_${key}`)?.value || "").trim(),
     Passenger_Mobile: ($(`pax_edit_mobile_${key}`)?.value || "").trim(),
+    Passenger_Phone: ($(`pax_edit_phone_${key}`)?.value || "").trim(),
     Email: ($(`pax_edit_email_${key}`)?.value || "").trim(),
     Dietary_Requirements: ($(`pax_edit_diet_${key}`)?.value || "").trim(),
     Medical_Conditions: ($(`pax_edit_med_${key}`)?.value || "").trim()
@@ -1233,6 +1462,7 @@ window.copyAllManifest = function (e, dealId) {
   }
 
   const lines = paxList.map((p, idx) => {
+    const phones = [p.Passenger_Mobile, p.Passenger_Phone].filter(Boolean).join(" / ");
     const parts = [
       `${idx + 1}. ${p.Name || "Unnamed"}`,
       p.Country ? `Nationality: ${p.Country}` : "",
@@ -1240,6 +1470,7 @@ window.copyAllManifest = function (e, dealId) {
       p.Passport_Number ? `Passport: ${p.Passport_Number}` : "",
       p.Passport_Expiry_Date ? `Exp: ${fmtDateDisplay(p.Passport_Expiry_Date)}` : "",
       p.Gender ? `Gender: ${p.Gender}` : "",
+      phones ? `Phone: ${phones}` : "",
       p.Dietary_Requirements ? `Diet: ${p.Dietary_Requirements}` : "",
       p.Medical_Conditions ? `Medical: ${p.Medical_Conditions}` : ""
     ].filter(Boolean);
@@ -1325,7 +1556,6 @@ function parseRawServiceLines(rawText, defaultDateIso) {
   lines.forEach((line, idx) => {
     const cols = splitDelimitedLine(line, delimiter);
 
-    // Skip header row if detected
     if (idx === 0 && cols.length >= 2) {
       const c0 = cols[0].toLowerCase();
       const c1 = cols[1].toLowerCase();
@@ -1346,7 +1576,6 @@ function parseRawServiceLines(rawText, defaultDateIso) {
       service = cols[1] || "";
       note = cols.slice(2).join(", ").trim();
     } else {
-      // First column is not a date -> treat as Service, Note
       dateIso = defaultDateIso || "";
       service = cols[0] || "";
       note = cols.slice(1).join(", ").trim();
@@ -1580,10 +1809,8 @@ function renderExpandedBookingBody(b) {
           <span class="meta-val">${escapeHtml(full.Flight_Details || "Not specified")}</span>
         </div>
         <div class="meta-item">
-          <span class="meta-label">Sales Order / Trip Type</span>
-          <span class="meta-val">
-            ${escapeHtml(full.Sales_Order_Number || "No SO")} · ${escapeHtml(full.Interested_In_Services || "Tailor-Made")}
-          </span>
+          <span class="meta-label">Trip Type</span>
+          <span class="meta-val">${escapeHtml(full.Interested_In_Services || "Tailor-Made")}</span>
         </div>
       </div>
     `;
@@ -1664,6 +1891,7 @@ function renderExpandedBookingBody(b) {
             <option value="Other">Other</option>
           </select>
           <input type="text" id="new_pax_mobile_${b.id}" placeholder="Mobile / WhatsApp" style="padding:5px 8px; font-size:12px;" />
+          <input type="text" id="new_pax_phone_${b.id}" placeholder="Phone" style="padding:5px 8px; font-size:12px;" />
           <input type="email" id="new_pax_email_${b.id}" placeholder="Email" style="padding:5px 8px; font-size:12px;" />
           <input type="text" id="new_pax_diet_${b.id}" placeholder="Dietary Requirements" style="padding:5px 8px; font-size:12px;" />
           <input type="text" id="new_pax_med_${b.id}" placeholder="Medical Conditions" style="padding:5px 8px; font-size:12px;" />
@@ -1713,6 +1941,7 @@ function renderExpandedBookingBody(b) {
               </td>
               <td>
                 <input type="text" id="pax_edit_mobile_${paxKey}" value="${escapeHtml(p.Passenger_Mobile || "")}" placeholder="Mobile" style="width:100%; padding:4px 6px; font-size:12px; margin-bottom:4px;" />
+                <input type="text" id="pax_edit_phone_${paxKey}" value="${escapeHtml(p.Passenger_Phone || "")}" placeholder="Phone" style="width:100%; padding:4px 6px; font-size:12px; margin-bottom:4px;" />
                 <input type="email" id="pax_edit_email_${paxKey}" value="${escapeHtml(p.Email || "")}" placeholder="Email" style="width:100%; padding:4px 6px; font-size:12px;" />
               </td>
               <td>
@@ -1731,6 +1960,9 @@ function renderExpandedBookingBody(b) {
         if (p.Dietary_Requirements) alerts.push(`<span class="badge badge-warn">Diet: ${escapeHtml(p.Dietary_Requirements)}</span>`);
         if (p.Medical_Conditions) alerts.push(`<span class="badge badge-danger">Med: ${escapeHtml(p.Medical_Conditions)}</span>`);
 
+        const hasMobile = Boolean(p.Passenger_Mobile && String(p.Passenger_Mobile).trim());
+        const hasPhone = Boolean(p.Passenger_Phone && String(p.Passenger_Phone).trim() && p.Passenger_Phone !== p.Passenger_Mobile);
+
         return `
           <tr>
             <td>
@@ -1745,9 +1977,10 @@ function renderExpandedBookingBody(b) {
             <td>${escapeHtml(fmtDateDisplay(p.Passport_Expiry_Date, "-"))}</td>
             <td>${escapeHtml(p.Gender || "-")}</td>
             <td>
-              ${p.Passenger_Mobile ? `<div class="mono copy-inline" onclick="copyText(event, '${escapeJsAttr(p.Passenger_Mobile)}', 'Mobile')">${escapeHtml(p.Passenger_Mobile)}</div>` : ""}
+              ${hasMobile ? `<div class="mono copy-inline" onclick="copyText(event, '${escapeJsAttr(p.Passenger_Mobile)}', 'Mobile')">📱 ${escapeHtml(p.Passenger_Mobile)}</div>` : ""}
+              ${hasPhone ? `<div class="mono copy-inline" onclick="copyText(event, '${escapeJsAttr(p.Passenger_Phone)}', 'Phone')">📞 ${escapeHtml(p.Passenger_Phone)}</div>` : ""}
               ${p.Email ? `<div class="product-clean-sub copy-inline" onclick="copyText(event, '${escapeJsAttr(p.Email)}', 'Email')">${escapeHtml(p.Email)}</div>` : ""}
-              ${!p.Passenger_Mobile && !p.Email ? `<span class="subtitle">-</span>` : ""}
+              ${!hasMobile && !hasPhone && !p.Email ? `<span class="subtitle">-</span>` : ""}
             </td>
             <td>${alerts.length ? alerts.join(" ") : `<span class="subtitle">—</span>`}</td>
             <td>
@@ -1768,7 +2001,7 @@ function renderExpandedBookingBody(b) {
               <th>Passport Number</th>
               <th>Passport Expiry</th>
               <th>Gender</th>
-              <th>Mobile / Email</th>
+              <th>Phone / Email</th>
               <th>Dietary &amp; Medical</th>
               <th>Edit</th>
             </tr>
@@ -1912,7 +2145,7 @@ function renderExpandedBookingBody(b) {
     </div>
   `;
 
-  // 4. OPERATIONS TABLE HTML (Unchanged 6 columns + Multi-Service Progress Header)
+  // 4. OPERATIONS TABLE HTML
   const progress = computeOperationsProgress(ops);
   let opsHeaderSummary = `<span>📋 Linked Operations (${Array.isArray(ops) ? ops.length : "..."})</span>`;
 
@@ -1935,16 +2168,12 @@ function renderExpandedBookingBody(b) {
           const isConfirmed = op.Bill_Status === "Supplier Confirmed" || op.Bill_Status === "Traveler Confirmation Sent" || op.Bill_Status === "Trip Ended";
           const resBadge = op.Bill_Status === "Cancelled" ? "badge-danger" : (isConfirmed ? "badge-ok" : "badge-warn");
           const billPayBadge = op.Payment_Status === "Paid" ? "badge-ok" : (op.Payment_Status === "Programmed Payment" ? "badge-info" : "badge-warn");
-          const cleanProd = parseCleanProductDetails(op.Product_Deatails);
 
           return `
             <tr>
               <td><strong>${escapeHtml(fmtDateDisplay(op.Bill_Date, "-"))}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "New")}</span></td>
               <td><strong>${escapeHtml(op.Supplier_Vendor_Name?.name || "No Supplier")}</strong><br/><span class="mono subtitle">${escapeHtml(op.Xero_Bill_Name || "")}</span></td>
-              <td>
-                <div class="product-clean-title">${escapeHtml(cleanProd.title)}</div>
-                ${cleanProd.meta ? `<div class="product-clean-sub">${escapeHtml(cleanProd.meta)}</div>` : ""}
-              </td>
+              <td>${renderOperationServicesCell(op)}</td>
               <td><span class="badge ${resBadge}">${escapeHtml(op.Bill_Status || "N/A")}</span></td>
               <td>
                 <span class="badge ${billPayBadge}">${escapeHtml(op.Payment_Status || "Awaiting Payment")}</span>
@@ -1964,7 +2193,7 @@ function renderExpandedBookingBody(b) {
           <tr>
             <th>Service Date / ID</th>
             <th>Supplier / Ref</th>
-            <th>Service Details</th>
+            <th>Service Details &amp; Schedules</th>
             <th>Reservation Status</th>
             <th>Payment Status</th>
             <th>Action</th>
@@ -2114,18 +2343,19 @@ function addBulkRow(prefill = null) {
 
   tr.innerHTML = `
     <td><input type="date" class="row-date" value="${defaultRowDate}" required /></td>
+    <td><input type="text" class="row-time" placeholder="e.g. 08:00 AM or Variable" style="width:140px;" /></td>
     <td>
-      <input type="text" class="row-vendor-input" list="dl_v_${rowUid}" placeholder="Type or select supplier..." autocomplete="off" style="min-width:190px;" />
+      <input type="text" class="row-vendor-input" list="dl_v_${rowUid}" placeholder="Type or select supplier..." autocomplete="off" style="min-width:170px;" />
       <input type="hidden" class="row-vendor" />
       <datalist id="dl_v_${rowUid}"></datalist>
     </td>
     <td>
-      <input type="text" class="row-product-input" list="dl_p_${rowUid}" value="${escapeHtml(prefillService)}" placeholder="Type or select service..." autocomplete="off" style="min-width:190px;" />
+      <input type="text" class="row-product-input" list="dl_p_${rowUid}" value="${escapeHtml(prefillService)}" placeholder="Type or select service..." autocomplete="off" style="min-width:170px;" />
       <input type="hidden" class="row-product" />
       <datalist id="dl_p_${rowUid}"></datalist>
     </td>
-    <td><input type="number" class="row-pax" value="${b.Number_of_Passengers || 1}" min="1" style="width:65px" /></td>
-    <td><input type="number" step="0.01" class="row-cost" placeholder="0.00" style="width:90px" /></td>
+    <td><input type="number" class="row-pax" value="${b.Number_of_Passengers || 1}" min="1" style="width:60px" /></td>
+    <td><input type="number" step="0.01" class="row-cost" placeholder="0.00" style="width:85px" /></td>
     <td>
       <select class="row-payflow">
         <option value="PO_ONLY">Create PO Only</option>
@@ -2237,6 +2467,7 @@ async function submitBulkOperations() {
 
   for (const r of rows) {
     const serviceDate = r.querySelector(".row-date").value;
+    const serviceTime = (r.querySelector(".row-time")?.value || "").trim();
     const vendorId = r.querySelector(".row-vendor").value;
     const productId = r.querySelector(".row-product").value;
     const pax = parseInt(r.querySelector(".row-pax").value, 10) || 1;
@@ -2251,6 +2482,13 @@ async function submitBulkOperations() {
     }
 
     const totalRowCost = pax * costPerPerson;
+    const productRow = {
+      Product_Name: productId,
+      Trip_Start_Date: serviceDate,
+      Qty: pax,
+      List_Price: costPerPerson
+    };
+    if (serviceTime) productRow.Start_Time = serviceTime;
 
     const payload = {
       Booking_Name: b.id,
@@ -2264,14 +2502,7 @@ async function submitBulkOperations() {
       Passenger_Details: b.Contact_Name?.name || "",
       Accommodation_Pick_up_Point: b.Accommodation_Pick_up_Point || "",
       Flight_Details: b.Flight_Details || "",
-      Product_Details: [
-        {
-          Product_Name: productId,
-          Trip_Start_Date: serviceDate,
-          Qty: pax,
-          List_Price: costPerPerson
-        }
-      ]
+      Product_Details: [productRow]
     };
 
     if (payFlow === "SCHEDULED" && payDate) {
@@ -2295,7 +2526,6 @@ async function submitBulkOperations() {
       Trigger: ["workflow"]
     });
 
-    // If triggered from a checklist service item, mark it checked & persist
     if (STATE.pendingChecklistItemId && STATE.checklistByDeal[b.id]?.items) {
       const targetItem = STATE.checklistByDeal[b.id].items.find((it) => it.id === STATE.pendingChecklistItemId);
       if (targetItem) {
@@ -2316,7 +2546,52 @@ async function submitBulkOperations() {
   }
 }
 
-window.openPayModal = function (dealId, opId) {
+// --- MANAGE / PAY & SERVICE SCHEDULES EDITOR ---
+function renderOpServicesEditor(fullOp) {
+  const wrap = $("opServicesEditorWrap");
+  if (!wrap) return;
+
+  const lines = Array.isArray(fullOp?.Product_Details) ? fullOp.Product_Details : [];
+  if (!lines.length) {
+    wrap.innerHTML = `<div class="empty-state" style="padding:12px;">No subform service lines found on this Operation.</div>`;
+    return;
+  }
+
+  const rowsHtml = lines.map((line, idx) => {
+    const prodName = line.Product_Name?.name || line.Product_Name || "Service";
+    const startIso = toIsoDateInput(line.Trip_Start_Date);
+    const startTime = line.Start_Time || "";
+    const qty = line.Qty ?? 1;
+    const price = line.List_Price ?? 0;
+
+    return `
+      <tr data-line-idx="${idx}">
+        <td><strong>${escapeHtml(prodName)}</strong></td>
+        <td><input type="date" class="op-line-date" value="${escapeHtml(startIso)}" style="padding:4px 6px; font-size:12px;" /></td>
+        <td><input type="text" class="op-line-time" value="${escapeHtml(startTime)}" placeholder="e.g. 07:30 AM / Variable" style="width:165px; padding:4px 6px; font-size:12px;" /></td>
+        <td><input type="number" class="op-line-pax" value="${escapeHtml(qty)}" min="1" style="width:65px; padding:4px 6px; font-size:12px;" /></td>
+        <td><input type="number" step="0.01" class="op-line-price" value="${escapeHtml(price)}" style="width:85px; padding:4px 6px; font-size:12px;" /></td>
+      </tr>
+    `;
+  }).join("");
+
+  wrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Start Date</th>
+          <th>Start Time / Schedule</th>
+          <th>Pax</th>
+          <th>Cost pp</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  `;
+}
+
+window.openPayModal = async function (dealId, opId) {
   STATE.expandedBookingId = dealId;
   const ops = STATE.operationsByDeal[dealId] || [];
   const op = ops.find((o) => o.id === opId);
@@ -2333,8 +2608,31 @@ window.openPayModal = function (dealId, opId) {
   if ($("payExpectedDate")) $("payExpectedDate").value = toIsoDateInput(op.Expected_Payment_Date) || today;
   if ($("payDate")) $("payDate").value = today;
   if ($("payAmount")) $("payAmount").value = op.Grand_Total || 0;
+  if ($("payDetailsNotes")) $("payDetailsNotes").value = op.Details_of_Product || "";
+  if ($("opServicesEditorWrap")) {
+    $("opServicesEditorWrap").innerHTML = `<div class="empty-state" style="padding:12px;">Loading service schedules...</div>`;
+  }
 
   toggleModal("payModal", true);
+
+  let fullOp = STATE.opFullRecord[opId];
+  if (!fullOp) {
+    try {
+      const res = await ZOHO.CRM.API.getRecord({ Entity: "Bills", RecordID: opId });
+      if (res?.data?.[0]) {
+        fullOp = res.data[0];
+        STATE.opFullRecord[opId] = fullOp;
+      }
+    } catch (e) {
+      console.warn("Could not load full operation record:", e);
+    }
+  }
+
+  STATE.editingOpRecord = fullOp || op;
+  if ($("payDetailsNotes")) {
+    $("payDetailsNotes").value = (fullOp?.Details_of_Product ?? op.Details_of_Product) || "";
+  }
+  renderOpServicesEditor(STATE.editingOpRecord);
 };
 
 async function submitOperationUpdate() {
@@ -2342,13 +2640,45 @@ async function submitOperationUpdate() {
   const opId = $("payOpId")?.value;
   const resStatus = $("payResStatus")?.value;
   const actionType = $("payActionType")?.value;
+  const detailsNotes = ($("payDetailsNotes")?.value || "").trim();
   const ops = STATE.operationsByDeal[dealId] || [];
-  const op = ops.find((o) => o.id === opId);
+  const op = STATE.editingOpRecord || ops.find((o) => o.id === opId);
 
   const updateData = {
     id: opId,
-    Bill_Status: resStatus
+    Bill_Status: resStatus,
+    Details_of_Product: detailsNotes
   };
+
+  // Collect updated Product_Details rows (Start Date, Start Time, Pax, List_Price)
+  const existingLines = Array.isArray(op?.Product_Details) ? op.Product_Details : [];
+  const editorRows = Array.from(document.querySelectorAll("#opServicesEditorWrap tbody tr"));
+
+  if (existingLines.length && editorRows.length) {
+    const updatedProductDetails = existingLines.map((origLine, idx) => {
+      const tr = editorRows[idx];
+      const rowPayload = {};
+      if (origLine.id) rowPayload.id = origLine.id;
+
+      const prodId = origLine.Product_Name?.id || origLine.Product_Name;
+      if (prodId) rowPayload.Product_Name = prodId;
+
+      if (tr) {
+        const dtVal = tr.querySelector(".op-line-date")?.value || "";
+        const tmVal = (tr.querySelector(".op-line-time")?.value || "").trim();
+        const paxVal = parseInt(tr.querySelector(".op-line-pax")?.value, 10) || 1;
+        const priceVal = parseFloat(tr.querySelector(".op-line-price")?.value) || 0;
+
+        if (dtVal) rowPayload.Trip_Start_Date = dtVal;
+        rowPayload.Start_Time = tmVal;
+        rowPayload.Qty = paxVal;
+        rowPayload.List_Price = priceVal;
+      }
+      return rowPayload;
+    });
+
+    updateData.Product_Details = updatedProductDetails;
+  }
 
   if (actionType === "SCHEDULED") {
     updateData.Expected_Payment_Date = $("payExpectedDate")?.value;
@@ -2378,19 +2708,21 @@ async function submitOperationUpdate() {
   }
 
   try {
-    showToast("Updating operation...");
+    showToast("Updating operation & schedules...");
     await ZOHO.CRM.API.updateRecord({
       Entity: "Bills",
       APIData: updateData,
       Trigger: ["workflow"]
     });
 
+    delete STATE.opFullRecord[opId];
+    STATE.editingOpRecord = null;
     toggleModal("payModal", false);
-    showToast("Operation updated and synced with Zoho Books.");
+    showToast("Operation updated and synced with Zoho CRM.");
     setTimeout(async () => {
       await fetchOperationsForDeal(dealId);
       renderBookingsAccordion();
-    }, 2500);
+    }, 1500);
   } catch (err) {
     console.error("Error updating Bill:", err);
     showToast("Error updating operation.");
