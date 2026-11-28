@@ -3,162 +3,166 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OPS Hub — Bamba Travel</title>
+  <title>Bamba Travel — OPS Hub</title>
   <link rel="stylesheet" href="styles.css" />
   <script src="https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js"></script>
 </head>
 <body>
-  <div class="sticky-chrome">
-    <header class="topbar">
-      <div class="brand">
-        <span class="logo-dot"></span>
-        <div>
-          <h1>OPS Hub <span class="version-pill">v2</span></h1>
-          <p class="subtitle">Live Operational &amp; Financial Control (CRM + Books)</p>
-        </div>
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand-badge">OPS</div>
+      <div>
+        <h1>Bamba Travel · Operations Hub</h1>
+        <span class="subtitle">Multi-Brand Trip Fulfillment, Schedules &amp; Supplier Payments</span>
       </div>
+    </div>
 
-      <div class="filters">
-        <span id="sdkStatus" class="badge badge-warn">Connecting Zoho...</span>
+    <div class="topbar-center">
+      <nav class="tabs" id="mainTabs">
+        <button class="tab-btn active" data-tab="operations">Bookings &amp; Operations</button>
+        <button class="tab-btn" data-tab="finance">Financials &amp; Margins</button>
+      </nav>
+    </div>
 
-        <select id="filterStage" title="Booking Stage">
-          <option value="Booking Won" selected>Stage: Booking Won</option>
-          <option value="Booked (On Hold)">Stage: Booked (On Hold)</option>
-          <option value="TEST">Stage: TEST (Sandbox)</option>
-        </select>
+    <div class="topbar-right">
+      <span id="sdkStatus" class="badge badge-warn">Connecting to Zoho...</span>
+      <button id="btnRefresh" class="btn btn-secondary">↻ Sync All</button>
+    </div>
+  </header>
 
-        <select id="filterPlatform" title="Sales Platform">
-          <option value="ALL">All Platforms</option>
-          <option value="Bamba Travel">Bamba Travel</option>
-          <option value="Baboo Travel">Baboo Travel</option>
-          <option value="BeDMC">BeDMC</option>
-          <option value="BeMexicoDMC">BeMexicoDMC</option>
-          <option value="BePeruDMC">BePeruDMC</option>
-          <option value="Peru Inca Trail">Peru Inca Trail</option>
-          <option value="Urban Day Trips">Urban Day Trips</option>
-        </select>
+  <section class="filters-bar">
+    <div class="filter-group">
+      <label>Sales Stage</label>
+      <select id="filterStage">
+        <option value="Booking Won" selected>Booking Won</option>
+        <option value="Amendment">Amendment</option>
+        <option value="Closed Won">Closed Won</option>
+      </select>
+    </div>
 
-        <select id="filterOwner" title="Assigned Coordinator">
-          <option value="ALL">All Coordinators</option>
-        </select>
+    <div class="filter-group">
+      <label>Brand / Platform</label>
+      <select id="filterPlatform">
+        <option value="ALL">All Brands</option>
+        <option value="Bamba Travel">Bamba Travel</option>
+        <option value="BeDMC">BeDMC</option>
+        <option value="Baboo Travel">Baboo Travel</option>
+      </select>
+    </div>
 
-        <select id="filterStartDate" title="Trip Start Date Window">
-          <option value="ALL">Start Date: All</option>
-          <option value="NEXT_7">Next 7 Days</option>
-          <option value="NEXT_14">Next 14 Days</option>
-          <option value="THIS_MONTH">This Month</option>
-          <option value="NEXT_MONTH">Next Month</option>
-        </select>
+    <div class="filter-group">
+      <label>Coordinator (Owner)</label>
+      <select id="filterOwner">
+        <option value="ALL">All Coordinators</option>
+      </select>
+    </div>
 
-        <div class="date-filter-wrap" title="Filter trips starting from this date">
-          <label for="filterSinceDate" class="subtitle" style="font-weight:600; white-space:nowrap;">Trips From:</label>
-          <input type="date" id="filterSinceDate" />
-        </div>
+    <div class="filter-group">
+      <label>Quick Window</label>
+      <select id="filterStartDate">
+        <option value="ALL" selected>Custom Range</option>
+        <option value="NEXT_7">Next 7 Days</option>
+        <option value="NEXT_14">Next 14 Days</option>
+        <option value="THIS_MONTH">This Month</option>
+        <option value="NEXT_MONTH">Next Month</option>
+      </select>
+    </div>
 
-        <div class="date-filter-wrap" title="Filter trips starting up to this date">
-          <label for="filterToDate" class="subtitle" style="font-weight:600; white-space:nowrap;">To:</label>
-          <input type="date" id="filterToDate" />
-        </div>
+    <div class="filter-group">
+      <label>Trips From</label>
+      <input type="date" id="filterSinceDate" />
+    </div>
 
-        <input type="text" id="searchInput" placeholder="Search Booking #, client, or name..." />
-        <button type="button" id="btnResetFilters" class="btn btn-secondary" title="Reset to active/upcoming window">Reset Filters</button>
-        <button type="button" id="btnRefresh" class="btn btn-secondary">↻ Refresh</button>
-      </div>
-    </header>
+    <div class="filter-group">
+      <label>Trips To</label>
+      <input type="date" id="filterToDate" />
+    </div>
 
-    <nav class="subnav" id="mainTabs">
-      <button type="button" class="tab-btn active" data-tab="operations">Operations</button>
-      <button type="button" class="tab-btn" data-tab="finance">Finance &amp; Margins</button>
-      <button type="button" class="tab-btn" data-tab="statements">Supplier Statements</button>
-      <button type="button" class="tab-btn" data-tab="reports">Management &amp; Reports</button>
-    </nav>
-  </div>
+    <div class="filter-group search-group">
+      <label>Search Booking / Passenger</label>
+      <input type="text" id="searchInput" placeholder="Booking #23972, passenger, trip..." />
+    </div>
 
-  <main class="workspace-single">
-    <!-- TAB 1: OPERATIONS -->
-    <section id="tab-operations" class="tab-view active">
-      <div class="list-summary-bar">
+    <div class="filter-group">
+      <label>&nbsp;</label>
+      <button type="button" id="btnResetFilters" class="btn btn-secondary btn-sm" title="Reset to default active window">Reset</button>
+    </div>
+  </section>
+
+  <main class="container">
+    <!-- TAB 1: BOOKINGS ACCORDION -->
+    <div id="tab-operations" class="tab-view active">
+      <div class="section-header">
         <div>
-          <h2>Active Bookings (<span id="bookingsCount">0</span>)</h2>
-          <p class="subtitle">Sorted chronologically by Start Date. Click any booking row to expand passengers, trip plan, notes, attachments, and operations.</p>
+          <h2>Bookings &amp; Operational Services (<span id="bookingsCount">0</span>)</h2>
+          <span class="subtitle">Chronological trip list · Click any Booking to manage passengers, schedules, confirmations &amp; supplier operations</span>
         </div>
       </div>
 
       <div id="bookingsAccordion" class="accordion-list">
-        <div class="empty-state">Loading bookings from Zoho CRM...</div>
+        <div class="empty-state">Loading Bookings...</div>
       </div>
-    </section>
+    </div>
 
-    <!-- TAB 2: FINANCE & MARGINS -->
-    <section id="tab-finance" class="tab-view hidden">
-      <div class="list-summary-bar">
+    <!-- TAB 2: FINANCIALS & MARGINS -->
+    <div id="tab-finance" class="tab-view hidden">
+      <div class="section-header">
         <div>
-          <h2>Finance &amp; Margins Overview</h2>
-          <p class="subtitle">Gross/Net Sale, Quoted vs. Real Cost, and Margin performance per Booking.</p>
+          <h2>Booking Profitability &amp; Supplier Spend</h2>
+          <span class="subtitle">Net Sale vs. Quoted Cost vs. Actual Operations Total</span>
         </div>
       </div>
-      <div id="financeContainer" class="section-card">
-        <div class="empty-state">Loading financial overview...</div>
-      </div>
-    </section>
-
-    <!-- TAB 3: SUPPLIER STATEMENTS -->
-    <section id="tab-statements" class="tab-view hidden">
-      <div class="section-card empty-state-large">
-        <h3>Supplier Statement Reconciliation</h3>
-        <p>Coming in Step 5: Filter operations by supplier and date range, cross-check statements, and batch-schedule Thursday Wise/transfer payments.</p>
-      </div>
-    </section>
-
-    <!-- TAB 4: MANAGEMENT & REPORTS -->
-    <section id="tab-reports" class="tab-view hidden">
-      <div class="section-card empty-state-large">
-        <h3>Management &amp; Agent Performance Reports</h3>
-        <p>Coming in Step 5: Monthly/weekly trip volume, coordinator workload distribution, completion rates, and role-based access.</p>
-      </div>
-    </section>
+      <div class="table-wrapper" id="financeContainer"></div>
+    </div>
   </main>
 
-  <!-- MODAL LOAD SERVICES (TEXT LIST OR CSV) -->
+  <!-- MODAL: LOAD SERVICES / MASTER TRIP PLAN -->
   <div id="loadServicesModal" class="modal hidden">
-    <div class="modal-content modal-md">
+    <div class="modal-card modal-wide">
       <div class="modal-header">
-        <h3>Load Trip Master Services — <span id="loadServicesBookingLabel"></span></h3>
-        <button type="button" id="closeLoadServicesModal" class="btn-icon">✕</button>
+        <div>
+          <h3>Load Planned Trip Services — <span id="loadServicesBookingLabel"></span></h3>
+          <span class="subtitle">Paste the itinerary/services list or upload a CSV from Sales so Operations can track &amp; book them step-by-step</span>
+        </div>
+        <button class="btn-icon" id="closeLoadServicesModal">✕</button>
       </div>
       <div class="modal-body">
-        <p class="hint">
-          Import the trip's planned services so they appear directly in the Booking's Operations Plan table and calculate real booking progress from day 1. Columns: <strong>Date, Service, Note</strong>.
-        </p>
-
-        <div class="mode-switch" style="justify-content:space-between; align-items:center;">
-          <div style="display:flex; gap:6px;">
-            <button type="button" class="btn btn-primary btn-sm" id="btnModeText">Paste Text / List</button>
-            <button type="button" class="btn btn-secondary btn-sm" id="btnModeCsv">Upload CSV</button>
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn btn-primary btn-sm" id="btnModeText">Paste Text / Lines</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btnModeCsv">Upload CSV File</button>
           </div>
-          <button type="button" class="btn btn-secondary btn-sm" id="btnDownloadServicesTemplate">⬇ Download CSV Template</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnDownloadServicesTemplate">⬇ Download CSV Template for Sales</button>
         </div>
 
-        <div id="modeTextBox" class="form-group">
-          <label for="servicesTextInput">Paste services (one per line: <code>Date, Service, Note</code> or just <code>Service</code>)</label>
-          <textarea id="servicesTextInput" rows="7" placeholder="2026-11-30, Antigua to Lanquin, Morning shuttle&#10;2026-12-01, Semuc Champey & Kanba Caves Tour, Include lunch&#10;2026-12-02, Lanquin to Flores"></textarea>
-        </div>
-
-        <div id="modeCsvBox" class="form-group hidden">
-          <label for="servicesCsvFile">Select CSV file (columns: <code>Date, Service, Note</code>)</label>
-          <input type="file" id="servicesCsvFile" accept=".csv,text/csv" />
-          <p class="subtitle" style="margin-top:4px;">Supports comma or semicolon delimiters, with or without header row.</p>
-        </div>
-
-        <div class="bulk-toolbar" style="margin-top:8px;">
-          <button type="button" id="btnPreviewServices" class="btn btn-secondary btn-sm">Preview Parsed Services</button>
-          <label class="checkbox-inline">
-            <input type="checkbox" id="appendServicesChk" checked />
-            <span>Append to existing trip plan (uncheck to replace)</span>
+        <div id="modeTextBox">
+          <label class="subtitle" style="display:block; margin-bottom:6px;">
+            Format per line: <code>YYYY-MM-DD, Service Name, Optional Note</code> (or just <code>Service Name</code> — defaults to Trip Start Date)
           </label>
+          <textarea
+            id="servicesTextInput"
+            rows="7"
+            style="width:100%; padding:10px; font-family:monospace; font-size:12px; border:1px solid var(--border, #d1d5db); border-radius:6px;"
+            placeholder="2026-12-01, Arrival Transfer Airport to Hotel, Flight AA123 at 14:30&#10;2026-12-02, Full Day Sacred Valley Tour, Include lunch&#10;2026-12-03, Train Ollantaytambo to Aguas Calientes"
+          ></textarea>
         </div>
 
-        <div id="servicesPreviewBox" class="table-wrapper hidden" style="margin-top:10px;">
+        <div id="modeCsvBox" class="hidden">
+          <label class="subtitle" style="display:block; margin-bottom:6px;">
+            Select a <code>.csv</code> file with columns: <strong>Date, Service, Note</strong>
+          </label>
+          <input type="file" id="servicesCsvFile" accept=".csv,text/csv" style="padding:8px; border:1px dashed var(--border, #d1d5db); border-radius:6px; width:100%;" />
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
+          <label class="checkbox-label">
+            <input type="checkbox" id="appendServicesChk" checked />
+            Append to existing Trip Plan (uncheck to replace current plan)
+          </label>
+          <button type="button" class="btn btn-secondary btn-sm" id="btnPreviewServices">Preview Parsed List</button>
+        </div>
+
+        <div id="servicesPreviewBox" class="table-wrapper hidden" style="margin-top:12px; max-height:220px; overflow:auto;">
           <table>
             <thead>
               <tr>
@@ -172,44 +176,42 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button type="button" id="cancelLoadServices" class="btn btn-secondary">Cancel</button>
-        <button type="button" id="submitLoadServices" class="btn btn-primary">Save Trip Plan</button>
+        <button type="button" class="btn btn-secondary" id="cancelLoadServices">Cancel</button>
+        <button type="button" class="btn btn-primary" id="submitLoadServices">Save to Trip Plan</button>
       </div>
     </div>
   </div>
 
-  <!-- MODAL BULK CREATE OPERATIONS -->
+  <!-- MODAL: CREATE OPERATIONS (GROUPED BY SUPPLIER) -->
   <div id="bulkModal" class="modal hidden">
-    <div class="modal-content">
+    <div class="modal-card modal-wide">
       <div class="modal-header">
-        <h3>Add Operations to Booking <span id="modalBookingLabel"></span></h3>
-        <button id="closeBulkModal" class="btn-icon">✕</button>
+        <div>
+          <h3>Create Operations for Booking <span id="modalBookingLabel"></span></h3>
+          <span class="subtitle">Rows with the same Supplier &amp; Payment setup automatically group into a single Operation (BO) · Full passenger manifest attaches automatically</span>
+        </div>
+        <button class="btn-icon" id="closeBulkModal">✕</button>
       </div>
       <div class="modal-body">
-        <p class="hint">
-          Each row creates a service line inside <strong>Operations (Bills)</strong>. Rows sharing the same Supplier, Service Date, and Payment Flow are automatically grouped into a single Purchase Order.
-        </p>
-
-        <div class="bulk-toolbar">
-          <button type="button" id="btnAddRow" class="btn btn-secondary">+ Add service row</button>
-          <label class="checkbox-inline">
+        <div class="bulk-controls">
+          <button type="button" class="btn btn-secondary" id="btnAddRow">+ Add Service Row</button>
+          <label class="checkbox-label">
             <input type="checkbox" id="bulkIsGroup" />
-            <span>Mark as Group Departure Operation</span>
+            Group Departure Operation
           </label>
         </div>
-
         <div class="table-wrapper">
-          <table class="bulk-table" id="bulkTable">
+          <table id="bulkTable">
             <thead>
               <tr>
-                <th>Service Date *</th>
+                <th>Service Date</th>
                 <th>Start Time / Schedule</th>
-                <th>Supplier (Vendor) *</th>
-                <th>Service (Product) *</th>
-                <th>Pax *</th>
-                <th>Cost pp (USD) *</th>
-                <th>Books Payment Flow</th>
-                <th>Payment Date / Method</th>
+                <th>Supplier (Vendor)</th>
+                <th>Service (Product)</th>
+                <th>Pax</th>
+                <th>Cost pp</th>
+                <th>Payment Flow</th>
+                <th>Pay Date / Account</th>
                 <th></th>
               </tr>
             </thead>
@@ -218,26 +220,29 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button id="cancelBulk" class="btn btn-secondary">Cancel</button>
-        <button id="submitBulk" class="btn btn-primary">Create Operations in Zoho CRM</button>
+        <button type="button" class="btn btn-secondary" id="cancelBulk">Cancel</button>
+        <button type="button" class="btn btn-primary" id="submitBulk">Create Operations in CRM</button>
       </div>
     </div>
   </div>
 
-  <!-- MODAL MANAGE / PAY & SERVICE SCHEDULES -->
+  <!-- MODAL: MANAGE / PAY SINGLE OPERATION + SERVICE SCHEDULES + CONFIRMATIONS -->
   <div id="payModal" class="modal hidden">
-    <div class="modal-content modal-lg">
+    <div class="modal-card modal-wide">
       <div class="modal-header">
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-          <h3>Manage Operation — <span id="payOpName" class="mono"></span></h3>
-          <button type="button" id="btnCopyPayRef" class="copy-btn-mini" title="Copy reference for card reconciliation">Copy Ref</button>
+        <div>
+          <h3>Manage Operation &amp; Service Schedules</h3>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:4px; flex-wrap:wrap;">
+            <span class="subtitle mono" id="payOpName" style="font-weight:600; color:var(--primary, #1d4ed8);"></span>
+            <button type="button" class="copy-btn-mini" id="btnCopyPayRef" title="Copy Payment / Booking Reference">Copy Ref</button>
+          </div>
         </div>
-        <button id="closePayModal" class="btn-icon">✕</button>
+        <button class="btn-icon" id="closePayModal">✕</button>
       </div>
       <div class="modal-body">
         <input type="hidden" id="payOpId" />
 
-        <div class="form-row-2">
+        <div class="form-grid-2">
           <div class="form-group">
             <label>Reservation Status</label>
             <select id="payResStatus">
@@ -250,60 +255,78 @@
           </div>
 
           <div class="form-group">
-            <label>Zoho Books Financial Action</label>
-            <select id="payActionType">
-              <option value="NONE">Update Operation / Schedules only</option>
-              <option value="SCHEDULED">Scheduled Payment (Creates Bill as Due)</option>
-              <option value="PAID_NOW">Paid Immediately (Creates Bill as Paid)</option>
-            </select>
+            <label>Supplier Confirmation # (Stored in OPS Hub Data)</label>
+            <input type="text" id="paySupplierConf" placeholder="e.g. CONF-884920 or bus locator..." />
           </div>
         </div>
 
         <div class="form-group">
-          <label for="payDetailsNotes">Operation Notes / Schedule Remarks (<code>Details of Product</code>)</label>
-          <textarea id="payDetailsNotes" rows="2" placeholder="General schedule notes, bus company instructions, variable pickup remarks..."></textarea>
+          <label>OPS Hub Note for this Operation (e.g. Pending: passport missing, voucher details)</label>
+          <input type="text" id="payHubOpNote" placeholder="Visible directly in the Operations table..." />
         </div>
 
-        <div class="form-group">
-          <label>Services in this Operation (Edit Date, Start Time, Pax &amp; Cost)</label>
-          <div id="opServicesEditorWrap" class="table-wrapper">
-            <div class="empty-state" style="padding:14px;">Loading services...</div>
+        <div class="form-group" style="margin-top:8px;">
+          <label>Services, Schedules &amp; Per-Service Confirmation / Notes</label>
+          <div class="table-wrapper" id="opServicesEditorWrap">
+            <div class="empty-state" style="padding:12px;">Loading service lines...</div>
           </div>
         </div>
 
-        <div id="scheduledFields" class="conditional-box hidden">
-          <div class="form-group" style="margin-bottom:0;">
-            <label>Expected Payment Date *</label>
+        <div class="form-group">
+          <label>Zoho Operation General Notes (Details_of_Product)</label>
+          <textarea id="payDetailsNotes" rows="2" style="width:100%; padding:8px; font-size:12px; border:1px solid var(--border, #d1d5db); border-radius:6px;" placeholder="Meeting point, voucher notes, or supplier instructions..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <label style="margin:0;">Passenger(s) Details Sent to Supplier</label>
+            <button type="button" class="btn btn-secondary btn-sm" id="btnRefreshOpManifest">↻ Refresh from Booking Passengers</button>
+          </div>
+          <textarea id="payPassengerDetails" rows="3" style="width:100%; padding:8px; font-family:monospace; font-size:11px; border:1px solid var(--border, #d1d5db); border-radius:6px;" placeholder="1. Name: ... - DOB: ... - Nationality: ..."></textarea>
+        </div>
+
+        <hr class="divider" />
+
+        <div class="form-group">
+          <label>Payment Action</label>
+          <select id="payActionType">
+            <option value="NONE">No payment change (Update status / schedules / confirmations only)</option>
+            <option value="SCHEDULED">Schedule Future Payment (Expected Payment Date)</option>
+            <option value="PAID_NOW">Register Payment Now (Send to Zoho Books)</option>
+          </select>
+        </div>
+
+        <div id="scheduledFields" class="hidden">
+          <div class="form-group">
+            <label>Expected Payment Date</label>
             <input type="date" id="payExpectedDate" />
           </div>
         </div>
 
-        <div id="paidNowFields" class="conditional-box hidden">
-          <div class="form-row-2">
+        <div id="paidNowFields" class="hidden">
+          <div class="form-grid-2">
             <div class="form-group">
-              <label>Payment Date *</label>
+              <label>Payment Date</label>
               <input type="date" id="payDate" />
             </div>
             <div class="form-group">
-              <label>Payment Amount *</label>
+              <label>Payment Amount</label>
               <input type="number" step="0.01" id="payAmount" />
             </div>
           </div>
           <div class="form-group">
-            <label>Payment From (Method) *</label>
-            <select id="payMethod">
-              <option value="Wise Bamba Travel Inc">Wise Bamba Travel Inc</option>
-            </select>
+            <label>Books Payment Account</label>
+            <select id="payMethod"></select>
           </div>
-          <label class="checkbox-inline">
+          <label class="checkbox-label">
             <input type="checkbox" id="paySendBooks" checked />
-            <span>Enable <strong>Send Payment to Books</strong></span>
+            Sync Payment to Zoho Books (st_Payment_to_Books)
           </label>
         </div>
       </div>
       <div class="modal-footer">
-        <button id="cancelPay" class="btn btn-secondary">Cancel</button>
-        <button id="submitPay" class="btn btn-primary">Save Changes</button>
+        <button type="button" class="btn btn-secondary" id="cancelPay">Cancel</button>
+        <button type="button" class="btn btn-primary" id="submitPay">Save Changes</button>
       </div>
     </div>
   </div>
