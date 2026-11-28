@@ -1,5 +1,6 @@
-// OPS Hub v2 — Unified Master Trip Plan + Operations, Single-Trip Sync & Clean Reference Modal
-const CHECKLIST_NOTE_TITLE = "[OPS_CHECKLIST]";
+// OPS Hub v2 — Chronological Unified Plan + Dedicated OPS Hub System Data Fields + Auto Supplier Manifest
+const CHECKLIST_FIELD_API = "OPS_Service_Checklist_Data";
+const OP_NOTES_FIELD_API = "OPS_Operations_Notes_Data";
 const MANAGEMENT_PROFILES = ["administrator", "management"];
 const MANAGEMENT_ROLES = ["manager", "management", "ceo", "director"];
 const MANAGEMENT_EMAILS = ["allen@bambatravel.com"];
@@ -33,6 +34,7 @@ const STATE = {
   passengersByDeal: {},
   notesByDeal: {},
   checklistByDeal: {},
+  opMetaByDeal: {},
   attachmentsByDeal: {},
   dealFullRecord: {},
   openSubDrawers: {},
@@ -119,6 +121,15 @@ function toIsoDateInput(dateVal) {
   const m = String(dt.getMonth() + 1).padStart(2, "0");
   const d = String(dt.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function fmtDateSlashDmy(dateVal) {
+  const dt = parseDateSafe(dateVal);
+  if (!dt) return "n/a";
+  const d = String(dt.getDate()).padStart(2, "0");
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const y = dt.getFullYear();
+  return `${d}/${m}/${y}`;
 }
 
 function getDefaultDateWindow() {
@@ -311,6 +322,8 @@ window.syncSingleTrip = async function (e, dealId) {
   delete STATE.notesByDeal[dealId];
   delete STATE.attachmentsByDeal[dealId];
   delete STATE.dealFullRecord[dealId];
+  delete STATE.checklistByDeal[dealId];
+  delete STATE.opMetaByDeal[dealId];
 
   renderBookingsAccordion();
 
@@ -408,184 +421,44 @@ function parseCleanProductDetails(rawText) {
   return { title: titles, meta: paxList, items: cleanedItems };
 }
 
-function getOperationDateColumnHtml(op) {
-  const fullOp = STATE.opFullRecord[op.id];
-  const subLines = fullOp && Array.isArray(fullOp.Product_Details) ? fullOp.Product_Details : [];
+// --- SUPPLIER EMAIL PASSENGER MANIFEST FORMATTER ---
+function buildSupplierPassengerDetailsText(dealId) {
+  const paxList = STATE.passengersByDeal[dealId] || [];
+  const full = STATE.dealFullRecord[dealId] || STATE.bookings.find((b) => b.id === dealId);
 
-  if (subLines.length > 1) {
-    const validDates = subLines
-      .map((r) => parseDateSafe(r.Trip_Start_Date))
-      .filter(Boolean)
-      .sort((a, b) => a.getTime() - b.getTime());
-
-    if (validDates.length >= 2) {
-      const first = validDates[0];
-      const last = validDates[validDates.length - 1];
-      if (first.getTime() !== last.getTime()) {
-        const rangeLabel = `${fmtShortDateNoYear(first)} – ${fmtDateDisplay(last)}`;
-        return `<strong>${escapeHtml(rangeLabel)}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "Syncing...")}</span>`;
-      }
-    }
+  if (Array.isArray(paxList) && paxList.length > 0) {
+    return paxList.map((p, idx) => {
+      const name = (p.Name || "n/a").trim();
+      const dob = p.Date_of_Birth ? fmtDateSlashDmy(p.Date_of_Birth) : "n/a";
+      const nationality = (p.Country || "n/a").trim();
+      const passport = (p.Passport_Number || "n/a").trim();
+      const diet = (p.Dietary_Requirements || "n/a").trim();
+      const phone = (p.Passenger_Phone || "n/a").trim();
+      const mobile = (p.Passenger_Mobile || "n/a").trim();
+      return `${idx + 1}. Name: ${name} - DOB: ${dob} - Nationality: ${nationality} - Passport No: ${passport} - Dietary Requirements: ${diet} - Phone: ${phone} - Mobile: ${mobile}`;
+    }).join("\n");
   }
 
-  const primaryDate = subLines[0]?.Trip_Start_Date || op.Bill_Date;
-  return `<strong>${escapeHtml(fmtDateDisplay(primaryDate, "-"))}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "Syncing...")}</span>`;
+  const leadName = (full?.Contact_Name?.name || "n/a").trim();
+  const leadPhone = (full?.Phone || "n/a").trim();
+  return `1. Name: ${leadName} - DOB: n/a - Nationality: n/a - Passport No: n/a - Dietary Requirements: n/a - Phone: ${leadPhone} - Mobile: ${leadPhone}`;
 }
 
-function renderOperationServicesCell(op) {
-  const fullOp = STATE.opFullRecord[op.id];
-  if (fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length > 0) {
-    const isMultiLine = fullOp.Product_Details.length > 1;
-    const linesHtml = fullOp.Product_Details.map((row) => {
-      const prodName = sanitizeServiceTitle(row.Product_Name?.name || row.Product_Name || "Service");
-      const startDt = isMultiLine && row.Trip_Start_Date ? fmtDateDisplay(row.Trip_Start_Date) : "";
-      const startTime = (row.Start_Time || "").trim();
-      const qty = row.Qty ? `${row.Qty} PAX` : "";
-      const timeBadge = startTime
-        ? `<span class="time-pill">🕒 ${escapeHtml(startTime)}</span>`
-        : `<span class="time-pill pending">Time TBD</span>`;
-
-      return `
-        <div class="service-line-item">
-          ${startDt ? `<span class="badge">${escapeHtml(startDt)}</span>` : ""}
-          <strong>${escapeHtml(prodName)}</strong>
-          ${timeBadge}
-          ${qty ? `<span class="subtitle">(${escapeHtml(qty)})</span>` : ""}
-        </div>
-      `;
-    }).join("");
-
-    const notesHtml = fullOp.Details_of_Product
-      ? `<div class="product-clean-sub" style="margin-top:4px;">📝 ${escapeHtml(fullOp.Details_of_Product)}</div>`
-      : "";
-
-    return `<div class="service-line-list">${linesHtml}</div>${notesHtml}`;
-  }
-
-  const cleanProd = parseCleanProductDetails(op.Product_Deatails);
-  const itemsHtml = cleanProd.items.length
-    ? `<div class="service-line-list">
-        ${cleanProd.items.map((it) => `
-          <div class="service-line-item">
-            <strong>${escapeHtml(it.name)}</strong>
-            ${it.pax ? `<span class="subtitle">(${escapeHtml(it.pax)})</span>` : ""}
-          </div>
-        `).join("")}
-      </div>`
-    : `<div class="product-clean-title">${escapeHtml(cleanProd.title)}</div>`;
-
-  const notesHtml = op.Details_of_Product
-    ? `<div class="product-clean-sub" style="margin-top:4px;">📝 ${escapeHtml(op.Details_of_Product)}</div>`
-    : "";
-
-  return `${itemsHtml}${notesHtml}`;
-}
-
-function buildOperationReferenceString(deal, op) {
-  if (op?.Xero_Bill_Name && String(op.Xero_Bill_Name).trim()) {
-    return String(op.Xero_Bill_Name).trim();
-  }
-  const clientName = deal?.Contact_Name?.name || deal?.Deal_Name || "Client";
-  const boNum = op?.Name || "BO-NEW";
-  const bkNum = deal?.Booking_Number || "";
-  return [clientName, boNum, bkNum].filter(Boolean).join(" | ");
-}
-
-function computeOperationsProgress(ops, dealId = null) {
-  const checklistItems = dealId ? (STATE.checklistByDeal[dealId]?.items || []) : [];
-  const pendingPlanItems = checklistItems.filter((it) => !it.done);
-
-  if ((!Array.isArray(ops) || !ops.length) && !pendingPlanItems.length) {
-    return {
-      opsCount: 0,
-      activeOpsCount: 0,
-      totalServices: 0,
-      pendingPlanCount: 0,
-      confirmedServices: 0,
-      paidServices: 0,
-      cancelledServices: 0,
-      percent: 0
-    };
-  }
-
-  let activeOpsCount = 0;
-  let linkedServices = 0;
-  let confirmedServices = 0;
-  let paidServices = 0;
-  let cancelledServices = 0;
-  let weightedPoints = 0;
-
-  (ops || []).forEach((op) => {
-    const fullOp = STATE.opFullRecord[op.id];
-    const parsed = parseCleanProductDetails(op.Product_Deatails);
-    const serviceCount = fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length
-      ? fullOp.Product_Details.length
-      : Math.max(1, parsed.items.length || 1);
-    const status = (op.Bill_Status || "").trim();
-    const payStatus = (op.Payment_Status || "").trim();
-
-    if (status === "Cancelled") {
-      cancelledServices += serviceCount;
-      return;
-    }
-
-    activeOpsCount++;
-    linkedServices += serviceCount;
-
-    const isConfirmed =
-      status === "Supplier Confirmed" ||
-      status === "Traveler Confirmation Sent" ||
-      status === "Trip Ended";
-    const isPaid = payStatus === "Paid";
-
-    if (isConfirmed) {
-      confirmedServices += serviceCount;
-      if (isPaid) {
-        paidServices += serviceCount;
-        weightedPoints += serviceCount * 1.0;
-      } else {
-        weightedPoints += serviceCount * 0.5;
-      }
-    }
-  });
-
-  const totalDenominator = checklistItems.length > 0
-    ? Math.max(checklistItems.length, linkedServices + pendingPlanItems.length)
-    : linkedServices;
-
-  const percent = totalDenominator > 0 ? Math.round((weightedPoints / totalDenominator) * 100) : 0;
-
-  return {
-    opsCount: (ops || []).length,
-    activeOpsCount,
-    totalServices: totalDenominator,
-    pendingPlanCount: pendingPlanItems.length,
-    confirmedServices,
-    paidServices,
-    cancelledServices,
-    percent
-  };
-}
-
-// --- SERVICE CHECKLIST / MASTER PLAN SERIALIZATION (Stored in [OPS_CHECKLIST] CRM Note) ---
-function serializeChecklistNote(items) {
-  const header = "OPS Service Checklist (Managed by OPS Hub v2):";
-  const lines = items.map((item) => {
+// --- DEDICATED OPS HUB SYSTEM DATA FIELDS ON DEALS ---
+// 1) Checklist: Deals.OPS_Service_Checklist_Data
+function serializeChecklistData(items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  return items.map((item) => {
     const mark = item.done ? "[x]" : "[ ]";
     const datePart = item.date ? `${item.date} | ` : "";
     const notePart = item.note ? ` — Note: ${item.note}` : "";
     return `${mark} ${datePart}${item.service}${notePart}`;
-  });
-  return `${header}\n${lines.join("\n")}`;
+  }).join("\n");
 }
 
-function parseChecklistNoteContent(rawContent) {
+function parseChecklistContent(rawContent) {
   if (!rawContent) return [];
-  const tmp = document.createElement("div");
-  tmp.innerHTML = String(rawContent).replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n").replace(/<\/li>/gi, "\n");
-  const plain = tmp.textContent || tmp.innerText || "";
-
-  const lines = plain
+  const lines = String(rawContent)
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => /^\[(x| )\]/i.test(l));
@@ -622,73 +495,285 @@ function parseChecklistNoteContent(rawContent) {
   });
 }
 
-function extractChecklistFromNotes(dealId, notesArray) {
-  if (!Array.isArray(notesArray)) {
-    STATE.checklistByDeal[dealId] = { noteId: null, items: [] };
-    return [];
+function hydrateHubSystemFieldsFromDeal(dealRecord) {
+  if (!dealRecord || !dealRecord.id) return;
+  const dealId = dealRecord.id;
+
+  if (Object.prototype.hasOwnProperty.call(dealRecord, CHECKLIST_FIELD_API)) {
+    const rawChecklist = dealRecord[CHECKLIST_FIELD_API] || "";
+    STATE.checklistByDeal[dealId] = {
+      items: parseChecklistContent(rawChecklist)
+    };
   }
 
-  const checklistNotes = notesArray.filter(
-    (n) => (n.Note_Title || "").trim().toUpperCase() === CHECKLIST_NOTE_TITLE
-  );
-
-  if (!checklistNotes.length) {
-    STATE.checklistByDeal[dealId] = { noteId: null, items: [] };
-    return notesArray;
+  if (Object.prototype.hasOwnProperty.call(dealRecord, OP_NOTES_FIELD_API)) {
+    const rawMeta = dealRecord[OP_NOTES_FIELD_API] || "";
+    STATE.opMetaByDeal[dealId] = parseOpMetaJson(rawMeta);
   }
-
-  const latestNote = checklistNotes[0];
-  const parsedItems = parseChecklistNoteContent(latestNote.Note_Content || "");
-  STATE.checklistByDeal[dealId] = {
-    noteId: latestNote.id,
-    items: parsedItems
-  };
-
-  return notesArray.filter(
-    (n) => (n.Note_Title || "").trim().toUpperCase() !== CHECKLIST_NOTE_TITLE
-  );
 }
 
 async function persistChecklistToCrm(dealId, items) {
-  const existing = STATE.checklistByDeal[dealId] || { noteId: null, items: [] };
-  const content = serializeChecklistNote(items);
+  const serialized = serializeChecklistData(items);
 
-  if (existing.noteId && typeof ZOHO.CRM.API.updateNotes === "function") {
-    try {
-      await ZOHO.CRM.API.updateNotes({
-        Entity: "Deals",
-        RecordID: dealId,
-        NoteID: existing.noteId,
-        Title: CHECKLIST_NOTE_TITLE,
-        Content: content
-      });
-      STATE.checklistByDeal[dealId] = { noteId: existing.noteId, items };
-      return;
-    } catch (e) {
-      console.warn("updateNotes fallback to delete+add:", e);
-    }
-  }
-
-  if (existing.noteId && typeof ZOHO.CRM.API.deleteNotes === "function") {
-    try {
-      await ZOHO.CRM.API.deleteNotes({
-        Entity: "Deals",
-        RecordID: dealId,
-        NoteID: existing.noteId
-      });
-    } catch (e) {
-      console.warn("Could not delete old checklist note:", e);
-    }
-  }
-
-  await ZOHO.CRM.API.addNotes({
+  await ZOHO.CRM.API.updateRecord({
     Entity: "Deals",
-    RecordID: dealId,
-    Title: CHECKLIST_NOTE_TITLE,
-    Content: content
+    APIData: {
+      id: dealId,
+      [CHECKLIST_FIELD_API]: serialized || null
+    }
   });
 
-  await fetchNotesForDeal(dealId);
+  STATE.checklistByDeal[dealId] = { items };
+  const booking = STATE.bookings.find((b) => b.id === dealId);
+  if (booking) booking[CHECKLIST_FIELD_API] = serialized;
+  if (STATE.dealFullRecord[dealId]) STATE.dealFullRecord[dealId][CHECKLIST_FIELD_API] = serialized;
+}
+
+// 2) Operation Confirmations & Notes: Deals.OPS_Operations_Notes_Data
+function parseOpMetaJson(rawStr) {
+  if (!rawStr || !String(rawStr).trim()) return {};
+  try {
+    const parsed = JSON.parse(String(rawStr));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function getOpMeta(dealId, opId) {
+  const dealMap = STATE.opMetaByDeal[dealId] || {};
+  return dealMap[opId] || { conf: "", note: "", lines: {} };
+}
+
+async function persistOpMetaToCrm(dealId, opId, metaPatch) {
+  if (!STATE.opMetaByDeal[dealId]) STATE.opMetaByDeal[dealId] = {};
+  const existing = STATE.opMetaByDeal[dealId][opId] || { conf: "", note: "", lines: {} };
+  const merged = {
+    conf: metaPatch.conf !== undefined ? metaPatch.conf : existing.conf,
+    note: metaPatch.note !== undefined ? metaPatch.note : existing.note,
+    lines: metaPatch.lines !== undefined ? metaPatch.lines : existing.lines
+  };
+
+  const hasLinesData = merged.lines && Object.values(merged.lines).some((v) => (v.conf && v.conf.trim()) || (v.note && v.note.trim()));
+  if (!merged.conf && !merged.note && !hasLinesData) {
+    delete STATE.opMetaByDeal[dealId][opId];
+  } else {
+    STATE.opMetaByDeal[dealId][opId] = merged;
+  }
+
+  const serialized = Object.keys(STATE.opMetaByDeal[dealId]).length > 0
+    ? JSON.stringify(STATE.opMetaByDeal[dealId])
+    : "";
+
+  await ZOHO.CRM.API.updateRecord({
+    Entity: "Deals",
+    APIData: {
+      id: dealId,
+      [OP_NOTES_FIELD_API]: serialized || null
+    }
+  });
+
+  const booking = STATE.bookings.find((b) => b.id === dealId);
+  if (booking) booking[OP_NOTES_FIELD_API] = serialized;
+  if (STATE.dealFullRecord[dealId]) STATE.dealFullRecord[dealId][OP_NOTES_FIELD_API] = serialized;
+}
+
+function getOperationPrimaryDate(op) {
+  const fullOp = STATE.opFullRecord[op.id];
+  const subLines = fullOp && Array.isArray(fullOp.Product_Details) ? fullOp.Product_Details : [];
+  if (subLines.length > 0) {
+    const validDates = subLines
+      .map((r) => parseDateSafe(r.Trip_Start_Date))
+      .filter(Boolean)
+      .sort((a, b) => a.getTime() - b.getTime());
+    if (validDates.length > 0) return validDates[0];
+  }
+  return parseDateSafe(op.Bill_Date);
+}
+
+function getOperationDateColumnHtml(op) {
+  const fullOp = STATE.opFullRecord[op.id];
+  const subLines = fullOp && Array.isArray(fullOp.Product_Details) ? fullOp.Product_Details : [];
+
+  if (subLines.length > 1) {
+    const validDates = subLines
+      .map((r) => parseDateSafe(r.Trip_Start_Date))
+      .filter(Boolean)
+      .sort((a, b) => a.getTime() - b.getTime());
+
+    if (validDates.length >= 2) {
+      const first = validDates[0];
+      const last = validDates[validDates.length - 1];
+      if (first.getTime() !== last.getTime()) {
+        const rangeLabel = `${fmtShortDateNoYear(first)} – ${fmtDateDisplay(last)}`;
+        return `<strong>${escapeHtml(rangeLabel)}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "Syncing...")}</span>`;
+      }
+    }
+  }
+
+  const primaryDate = subLines[0]?.Trip_Start_Date || op.Bill_Date;
+  return `<strong>${escapeHtml(fmtDateDisplay(primaryDate, "-"))}</strong><br/><span class="mono subtitle">${escapeHtml(op.Name || "Syncing...")}</span>`;
+}
+
+function renderOperationServicesCell(dealId, op) {
+  const opMeta = getOpMeta(dealId, op.id);
+  const fullOp = STATE.opFullRecord[op.id];
+
+  const metaBadgesHtml = (opMeta.conf || opMeta.note)
+    ? `<div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:5px;">
+        ${opMeta.conf ? `<span class="badge badge-ok copy-inline" onclick="copyText(event, '${escapeJsAttr(opMeta.conf)}', 'Confirmation #')" title="Click to copy confirmation #">🔖 Conf: <strong>${escapeHtml(opMeta.conf)}</strong></span>` : ""}
+        ${opMeta.note ? `<span class="badge badge-warn">🗒️ ${escapeHtml(opMeta.note)}</span>` : ""}
+      </div>`
+    : "";
+
+  if (fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length > 0) {
+    const isMultiLine = fullOp.Product_Details.length > 1;
+    const linesHtml = fullOp.Product_Details.map((row, idx) => {
+      const prodName = sanitizeServiceTitle(row.Product_Name?.name || row.Product_Name || "Service");
+      const startDt = isMultiLine && row.Trip_Start_Date ? fmtDateDisplay(row.Trip_Start_Date) : "";
+      const startTime = (row.Start_Time || "").trim();
+      const qty = row.Qty ? `${row.Qty} PAX` : "";
+      const timeBadge = startTime
+        ? `<span class="time-pill">🕒 ${escapeHtml(startTime)}</span>`
+        : `<span class="time-pill pending">Time TBD</span>`;
+
+      const lineKey = row.id || `idx_${idx}`;
+      const lineMeta = opMeta.lines?.[lineKey] || {};
+      const lineConfBadge = lineMeta.conf
+        ? `<span class="badge badge-ok copy-inline" style="font-size:10px;" onclick="copyText(event, '${escapeJsAttr(lineMeta.conf)}', 'Service Conf #')">🔖 ${escapeHtml(lineMeta.conf)}</span>`
+        : "";
+      const lineNoteBadge = lineMeta.note
+        ? `<span class="subtitle" style="font-size:11px;">(${escapeHtml(lineMeta.note)})</span>`
+        : "";
+
+      return `
+        <div class="service-line-item">
+          ${startDt ? `<span class="badge">${escapeHtml(startDt)}</span>` : ""}
+          <strong>${escapeHtml(prodName)}</strong>
+          ${timeBadge}
+          ${qty ? `<span class="subtitle">(${escapeHtml(qty)})</span>` : ""}
+          ${lineConfBadge}
+          ${lineNoteBadge}
+        </div>
+      `;
+    }).join("");
+
+    const notesHtml = fullOp.Details_of_Product
+      ? `<div class="product-clean-sub" style="margin-top:4px;">📝 ${escapeHtml(fullOp.Details_of_Product)}</div>`
+      : "";
+
+    return `<div class="service-line-list">${linesHtml}</div>${metaBadgesHtml}${notesHtml}`;
+  }
+
+  const cleanProd = parseCleanProductDetails(op.Product_Deatails);
+  const itemsHtml = cleanProd.items.length
+    ? `<div class="service-line-list">
+        ${cleanProd.items.map((it) => `
+          <div class="service-line-item">
+            <strong>${escapeHtml(it.name)}</strong>
+            ${it.pax ? `<span class="subtitle">(${escapeHtml(it.pax)})</span>` : ""}
+          </div>
+        `).join("")}
+      </div>`
+    : `<div class="product-clean-title">${escapeHtml(cleanProd.title)}</div>`;
+
+  const notesHtml = op.Details_of_Product
+    ? `<div class="product-clean-sub" style="margin-top:4px;">📝 ${escapeHtml(op.Details_of_Product)}</div>`
+    : "";
+
+  return `${itemsHtml}${metaBadgesHtml}${notesHtml}`;
+}
+
+function buildOperationReferenceString(deal, op) {
+  if (op?.Xero_Bill_Name && String(op.Xero_Bill_Name).trim()) {
+    return String(op.Xero_Bill_Name).trim();
+  }
+  const clientName = deal?.Contact_Name?.name || deal?.Deal_Name || "Client";
+  const boNum = op?.Name || "BO-NEW";
+  const bkNum = deal?.Booking_Number || "";
+  return [clientName, boNum, bkNum].filter(Boolean).join(" | ");
+}
+
+function computeOperationsProgress(ops, dealId = null) {
+  const checklistItems = dealId ? (STATE.checklistByDeal[dealId]?.items || []) : [];
+  const pendingPlanItems = checklistItems.filter((it) => !it.done);
+
+  if ((!Array.isArray(ops) || !ops.length) && !pendingPlanItems.length) {
+    return {
+      opsCount: 0,
+      activeOpsCount: 0,
+      totalServices: 0,
+      bookedServices: 0,
+      pendingPlanCount: 0,
+      confirmedServices: 0,
+      paidServices: 0,
+      cancelledServices: 0,
+      percent: 0
+    };
+  }
+
+  let activeOpsCount = 0;
+  let bookedServices = 0;
+  let confirmedServices = 0;
+  let paidServices = 0;
+  let cancelledServices = 0;
+  let weightedPoints = 0;
+
+  (ops || []).forEach((op) => {
+    const fullOp = STATE.opFullRecord[op.id];
+    const parsed = parseCleanProductDetails(op.Product_Deatails);
+    const serviceCount = fullOp && Array.isArray(fullOp.Product_Details) && fullOp.Product_Details.length
+      ? fullOp.Product_Details.length
+      : Math.max(1, parsed.items.length || 1);
+    const status = (op.Bill_Status || "").trim();
+    const payStatus = (op.Payment_Status || "").trim();
+
+    if (status === "Cancelled") {
+      cancelledServices += serviceCount;
+      return;
+    }
+
+    activeOpsCount++;
+    bookedServices += serviceCount;
+
+    const isConfirmed =
+      status === "Supplier Confirmed" ||
+      status === "Traveler Confirmation Sent" ||
+      status === "Trip Ended";
+    const isPaid = payStatus === "Paid";
+
+    if (isConfirmed && isPaid) {
+      confirmedServices += serviceCount;
+      paidServices += serviceCount;
+      weightedPoints += serviceCount * 1.0;
+    } else if (isConfirmed) {
+      confirmedServices += serviceCount;
+      weightedPoints += serviceCount * 0.65;
+    } else if (isPaid) {
+      paidServices += serviceCount;
+      weightedPoints += serviceCount * 0.6;
+    } else {
+      weightedPoints += serviceCount * 0.25;
+    }
+  });
+
+  const totalDenominator = checklistItems.length > 0
+    ? Math.max(checklistItems.length, bookedServices + pendingPlanItems.length)
+    : bookedServices;
+
+  const percent = totalDenominator > 0 ? Math.round((weightedPoints / totalDenominator) * 100) : 0;
+
+  return {
+    opsCount: (ops || []).length,
+    activeOpsCount,
+    totalServices: totalDenominator,
+    bookedServices,
+    pendingPlanCount: pendingPlanItems.length,
+    confirmedServices,
+    paidServices,
+    cancelledServices,
+    percent
+  };
 }
 
 function autoMatchChecklistWithOperations(dealId) {
@@ -886,6 +971,7 @@ function bindEvents() {
       STATE.passengersByDeal = {};
       STATE.notesByDeal = {};
       STATE.checklistByDeal = {};
+      STATE.opMetaByDeal = {};
       STATE.attachmentsByDeal = {};
       STATE.dealFullRecord = {};
       loadBookings();
@@ -931,6 +1017,19 @@ function bindEvents() {
     $("btnCopyPayRef").onclick = (e) => {
       const refText = $("payOpName")?.textContent || "";
       window.copyText(e, refText, "Reference");
+    };
+  }
+  if ($("btnRefreshOpManifest")) {
+    $("btnRefreshOpManifest").onclick = async () => {
+      const dealId = STATE.expandedBookingId;
+      if (!dealId) return;
+      if (!STATE.passengersByDeal[dealId]) {
+        await fetchPassengersForDeal(dealId);
+      }
+      if ($("payPassengerDetails")) {
+        $("payPassengerDetails").value = buildSupplierPassengerDetailsText(dealId);
+      }
+      showToast("Passenger manifest refreshed from Booking!");
     };
   }
   if ($("payActionType")) {
@@ -993,7 +1092,10 @@ async function fetchPaginatedDealsProgressive(criteriaQuery, generationId, prefe
 
     const batch = Array.isArray(res?.data) ? res.data : [];
     batch.forEach((r) => {
-      if (r && r.id) map.set(r.id, r);
+      if (r && r.id) {
+        map.set(r.id, r);
+        hydrateHubSystemFieldsFromDeal(r);
+      }
     });
 
     STATE.bookings = sortBookingsChronologically(Array.from(map.values()));
@@ -1055,6 +1157,7 @@ async function searchHistoricalBookings(term) {
     found.forEach((item) => {
       if (item?.id && !STATE.bookings.some((b) => b.id === item.id)) {
         STATE.bookings.push(item);
+        hydrateHubSystemFieldsFromDeal(item);
         added++;
       }
     });
@@ -1206,7 +1309,10 @@ function renderBookingsAccordion() {
       ? (() => {
           const prog = computeOperationsProgress(loadedOps || [], b.id);
           const badgeCls = prog.percent === 100 ? "badge-ok" : (prog.percent > 0 ? "badge-info" : "badge-warn");
-          return `<span class="badge ${badgeCls}">${prog.percent}% Ops (${prog.totalServices} svc)</span>`;
+          return `
+            <span class="badge ${badgeCls}">${prog.percent}% (${prog.bookedServices}/${prog.totalServices} booked)</span>
+            <span class="subtitle" style="font-size:11px; white-space:nowrap;">${prog.confirmedServices}/${prog.totalServices} conf · ${prog.paidServices}/${prog.totalServices} paid</span>
+          `;
         })()
       : "";
 
@@ -1295,6 +1401,7 @@ async function fetchFullDealRecord(dealId) {
     const res = await ZOHO.CRM.API.getRecord({ Entity: "Deals", RecordID: dealId });
     if (res?.data?.[0]) {
       STATE.dealFullRecord[dealId] = res.data[0];
+      hydrateHubSystemFieldsFromDeal(res.data[0]);
     }
   } catch (e) {
     console.warn("Full deal fetch fallback:", e);
@@ -1379,12 +1486,11 @@ async function fetchNotesForDeal(dealId) {
       RelatedList: "Notes"
     });
     const allNotes = (relNotes && relNotes.data) ? relNotes.data : [];
-    STATE.notesByDeal[dealId] = extractChecklistFromNotes(dealId, allNotes);
+    STATE.notesByDeal[dealId] = allNotes.filter(
+      (n) => (n.Note_Title || "").trim().toUpperCase() !== "[OPS_CHECKLIST]"
+    );
   } catch (e) {
     STATE.notesByDeal[dealId] = [];
-    if (!STATE.checklistByDeal[dealId]) {
-      STATE.checklistByDeal[dealId] = { noteId: null, items: [] };
-    }
   }
 }
 
@@ -2224,7 +2330,7 @@ function renderExpandedBookingBody(b) {
     </div>
   `;
 
-  // 3. NOTES & ATTACHMENTS ACCORDION HTML (Clean — Master Service Plan moved to Operations Table)
+  // 3. NOTES & ATTACHMENTS ACCORDION HTML
   let notesListHtml = "";
 
   if (dealAttachments.length) {
@@ -2306,7 +2412,7 @@ function renderExpandedBookingBody(b) {
     </div>
   `;
 
-  // 4. UNIFIED TRIP PLAN + LINKED OPERATIONS TABLE HTML
+  // 4. UNIFIED TRIP PLAN + LINKED OPERATIONS TABLE (CHRONOLOGICALLY MERGED)
   const progress = computeOperationsProgress(ops, b.id);
   const hasAnyTableContent = (Array.isArray(ops) && ops.length > 0) || pendingPlanItems.length > 0;
   let opsHeaderSummary = `<span>📋 Trip Operations &amp; Planned Services (${Array.isArray(ops) ? ops.length : "..."})</span>`;
@@ -2317,7 +2423,7 @@ function renderExpandedBookingBody(b) {
     opsHeaderSummary = `
       <span>📋 Operations (${progress.opsCount} ops · ${progress.totalServices} total service${progress.totalServices === 1 ? "" : "s"}${pendingTag})</span>
       <div class="progress-pill-wrap">
-        <span class="subtitle">${progress.confirmedServices}/${progress.totalServices} confirmed · ${progress.paidServices}/${progress.totalServices} paid</span>
+        <span class="subtitle">${progress.bookedServices}/${progress.totalServices} booked · ${progress.confirmedServices}/${progress.totalServices} confirmed · ${progress.paidServices}/${progress.totalServices} paid</span>
         <div class="progress-track"><div class="progress-fill" style="width:${progress.percent}%;"></div></div>
         <span class="badge ${progBadgeCls}">${progress.percent}%</span>
       </div>
@@ -2342,35 +2448,64 @@ function renderExpandedBookingBody(b) {
 
   let opsBodyHtml = `<div class="empty-state">Loading Booking operations...</div>`;
   if (Array.isArray(ops)) {
-    const pendingRowsHtml = pendingPlanItems.map((it) => {
-      const isChecked = selectedPlanSet.has(it.id);
-      return `
-        <tr class="plan-pending-row">
-          <td>
-            <div style="display:flex; align-items:flex-start; gap:8px;">
-              <input type="checkbox" class="plan-chk" ${isChecked ? "checked" : ""} onchange="toggleSelectPlanItem(event, '${b.id}', '${it.id}', this.checked)" title="Select to group into an Operation" />
-              <div>
-                <strong>${escapeHtml(fmtDateDisplay(it.date, "No date"))}</strong><br/>
-                <span class="mono subtitle">Planned</span>
-              </div>
-            </div>
-          </td>
-          <td><span class="subtitle" style="font-style:italic;">Unassigned Supplier</span></td>
-          <td>
-            <div class="product-clean-title">${escapeHtml(it.service)}</div>
-            ${it.note ? `<div class="product-clean-sub">📝 ${escapeHtml(it.note)}</div>` : ""}
-          </td>
-          <td><span class="badge badge-danger">Not Booked</span></td>
-          <td><span class="subtitle">—</span></td>
-          <td style="white-space:nowrap;">
-            <button type="button" class="btn btn-primary btn-sm" onclick="convertChecklistItemToOp(event, '${b.id}', '${it.id}')">+ Book Op</button>
-            <button type="button" class="btn-icon" title="Remove planned item" onclick="removeChecklistItem(event, '${b.id}', '${it.id}')" style="margin-left:4px;">✕</button>
-          </td>
-        </tr>
-      `;
-    }).join("");
+    const unifiedEntries = [];
 
-    const linkedOpsRowsHtml = ops.map((op) => {
+    pendingPlanItems.forEach((it, idx) => {
+      const dt = parseDateSafe(it.date);
+      unifiedEntries.push({
+        type: "PLAN",
+        sortTime: dt ? dt.getTime() : Number.MAX_SAFE_INTEGER,
+        tieBreaker: idx,
+        item: it
+      });
+    });
+
+    ops.forEach((op, idx) => {
+      const dt = getOperationPrimaryDate(op);
+      unifiedEntries.push({
+        type: "OP",
+        sortTime: dt ? dt.getTime() : Number.MAX_SAFE_INTEGER,
+        tieBreaker: 1000 + idx,
+        op
+      });
+    });
+
+    unifiedEntries.sort((a, b) => {
+      if (a.sortTime !== b.sortTime) return a.sortTime - b.sortTime;
+      return a.tieBreaker - b.tieBreaker;
+    });
+
+    const allTableRows = unifiedEntries.map((entry) => {
+      if (entry.type === "PLAN") {
+        const it = entry.item;
+        const isChecked = selectedPlanSet.has(it.id);
+        return `
+          <tr class="plan-pending-row">
+            <td>
+              <div style="display:flex; align-items:flex-start; gap:8px;">
+                <input type="checkbox" class="plan-chk" ${isChecked ? "checked" : ""} onchange="toggleSelectPlanItem(event, '${b.id}', '${it.id}', this.checked)" title="Select to group into an Operation" />
+                <div>
+                  <strong>${escapeHtml(fmtDateDisplay(it.date, "No date"))}</strong><br/>
+                  <span class="mono subtitle">Planned</span>
+                </div>
+              </div>
+            </td>
+            <td><span class="subtitle" style="font-style:italic;">Unassigned Supplier</span></td>
+            <td>
+              <div class="product-clean-title">${escapeHtml(it.service)}</div>
+              ${it.note ? `<div class="product-clean-sub">📝 ${escapeHtml(it.note)}</div>` : ""}
+            </td>
+            <td><span class="badge badge-danger">Not Booked</span></td>
+            <td><span class="subtitle">—</span></td>
+            <td style="white-space:nowrap;">
+              <button type="button" class="btn btn-primary btn-sm" onclick="convertChecklistItemToOp(event, '${b.id}', '${it.id}')">+ Book Op</button>
+              <button type="button" class="btn-icon" title="Remove planned item" onclick="removeChecklistItem(event, '${b.id}', '${it.id}')" style="margin-left:4px;">✕</button>
+            </td>
+          </tr>
+        `;
+      }
+
+      const op = entry.op;
       const isConfirmed = op.Bill_Status === "Supplier Confirmed" || op.Bill_Status === "Traveler Confirmation Sent" || op.Bill_Status === "Trip Ended";
       const resBadge = op.Bill_Status === "Cancelled" ? "badge-danger" : (isConfirmed ? "badge-ok" : "badge-warn");
       const billPayBadge = op.Payment_Status === "Paid" ? "badge-ok" : (op.Payment_Status === "Programmed Payment" ? "badge-info" : "badge-warn");
@@ -2379,7 +2514,7 @@ function renderExpandedBookingBody(b) {
         <tr>
           <td>${getOperationDateColumnHtml(op)}</td>
           <td><strong>${escapeHtml(op.Supplier_Vendor_Name?.name || "No Supplier")}</strong></td>
-          <td>${renderOperationServicesCell(op)}</td>
+          <td>${renderOperationServicesCell(b.id, op)}</td>
           <td><span class="badge ${resBadge}">${escapeHtml(op.Bill_Status || "N/A")}</span></td>
           <td>
             <span class="badge ${billPayBadge}">${escapeHtml(op.Payment_Status || "Awaiting Payment")}</span>
@@ -2392,7 +2527,6 @@ function renderExpandedBookingBody(b) {
       `;
     }).join("");
 
-    const allTableRows = `${pendingRowsHtml}${linkedOpsRowsHtml}`;
     opsBodyHtml = allTableRows
       ? `
         ${selectionToolbarHtml}
@@ -2557,7 +2691,10 @@ window.openBulkModal = async function (dealId, prefillList = null) {
   if ($("bulkTbody")) $("bulkTbody").innerHTML = "";
   toggleModal("bulkModal", true);
 
-  await ensureCatalogsLoaded();
+  await Promise.all([
+    ensureCatalogsLoaded(),
+    !STATE.passengersByDeal[b.id] ? fetchPassengersForDeal(b.id) : Promise.resolve()
+  ]);
 
   const itemsToAdd = Array.isArray(prefillList) && prefillList.length
     ? prefillList
@@ -2707,6 +2844,12 @@ async function submitBulkOperations() {
   const b = STATE.bookings.find((item) => item.id === STATE.expandedBookingId);
   if (!b) return;
 
+  if (!STATE.passengersByDeal[b.id]) {
+    await fetchPassengersForDeal(b.id);
+  }
+  const formattedPassengerDetails = buildSupplierPassengerDetailsText(b.id);
+  const fullDeal = STATE.dealFullRecord[b.id] || b;
+
   const rows = Array.from(document.querySelectorAll("#bulkTbody tr"));
   if (!rows.length) return;
 
@@ -2740,21 +2883,21 @@ async function submitBulkOperations() {
     };
     if (serviceTime) productRow.Start_Time = serviceTime;
 
-    // Group rows with the same Supplier + Payment Flow into a single Purchase Order (e.g., Marvelus)
     const groupKey = `${vendorId}__${payFlow}__${payDate}__${payMethod}`;
     if (!groupedMap.has(groupKey)) {
       const payload = {
         Booking_Name: b.id,
-        Booking_Number: String(b.Booking_Number || ""),
-        Sales_Platform: b.Sales_Platform || "Bamba Travel",
+        Booking_Number: String(fullDeal.Booking_Number || ""),
+        Sales_Platform: fullDeal.Sales_Platform || "Bamba Travel",
         Supplier_Vendor_Name: vendorId,
         Bill_Date: serviceDate,
         Bill_Status: "Supplier Confirmation Awaited",
         Payment_Status: "Awaiting Payment",
         Group_Departure_Operation: isGroup,
-        Passenger_Details: b.Contact_Name?.name || "",
-        Accommodation_Pick_up_Point: b.Accommodation_Pick_up_Point || "",
-        Flight_Details: b.Flight_Details || "",
+        Number_of_Passengers: pax,
+        Passenger_Details: formattedPassengerDetails,
+        Accommodation_Pick_up_Point: fullDeal.Accommodation_Pick_up_Point || "",
+        Flight_Details: fullDeal.Flight_Details || "",
         Product_Details: [productRow],
         _meta: {
           vendorName,
@@ -2779,6 +2922,9 @@ async function submitBulkOperations() {
       existing.Product_Details.push(productRow);
       existing._meta.serviceLabels.push(productName);
       existing._meta.totalCost += totalRowCost;
+      if (pax > (existing.Number_of_Passengers || 0)) {
+        existing.Number_of_Passengers = pax;
+      }
       if (serviceDate < existing.Bill_Date) {
         existing.Bill_Date = serviceDate;
       }
@@ -2799,7 +2945,6 @@ async function submitBulkOperations() {
       Trigger: ["workflow"]
     });
 
-    // Optimistic insertion so the new Operation appears immediately while Zoho indexes it
     if (!Array.isArray(STATE.operationsByDeal[b.id])) {
       STATE.operationsByDeal[b.id] = [];
     }
@@ -2815,7 +2960,8 @@ async function submitBulkOperations() {
         Bill_Status: entry.Bill_Status,
         Payment_Status: entry.st_Payment_to_Books ? "Paid" : (entry.Expected_Payment_Date ? "Programmed Payment" : "Awaiting Payment"),
         Expected_Payment_Date: entry.Expected_Payment_Date || null,
-        Grand_Total: entry._meta.totalCost
+        Grand_Total: entry._meta.totalCost,
+        Passenger_Details: formattedPassengerDetails
       };
       STATE.operationsByDeal[b.id].unshift(optimisticOp);
 
@@ -2842,18 +2988,19 @@ async function submitBulkOperations() {
 
     toggleModal("bulkModal", false);
     renderBookingsAccordion();
-    showToast(`${recordsToInsert.length} operation(s) created! Use "↻ Sync Trip" in a few seconds to fetch BO numbers.`);
+    showToast(`${recordsToInsert.length} operation(s) created with full passenger manifest!`);
   } catch (err) {
     console.error("Error inserting into Bills:", err);
     showToast("Error creating operations. Check browser console for details.");
   }
 }
 
-// --- MANAGE / PAY & SERVICE SCHEDULES EDITOR ---
-function renderOpServicesEditor(fullOp) {
+// --- MANAGE / PAY & SERVICE SCHEDULES + OPS HUB CONFIRMATION/NOTES EDITOR ---
+function renderOpServicesEditor(dealId, opId, fullOp) {
   const wrap = $("opServicesEditorWrap");
   if (!wrap) return;
 
+  const opMeta = getOpMeta(dealId, opId);
   const lines = Array.isArray(fullOp?.Product_Details) ? fullOp.Product_Details : [];
   if (!lines.length) {
     wrap.innerHTML = `<div class="empty-state" style="padding:12px;">No subform service lines found on this Operation.</div>`;
@@ -2867,13 +3014,18 @@ function renderOpServicesEditor(fullOp) {
     const qty = line.Qty ?? 1;
     const price = line.List_Price ?? 0;
 
+    const lineKey = line.id || `idx_${idx}`;
+    const lineMeta = opMeta.lines?.[lineKey] || { conf: "", note: "" };
+
     return `
-      <tr data-line-idx="${idx}">
+      <tr data-line-idx="${idx}" data-line-key="${escapeHtml(lineKey)}">
         <td><strong>${escapeHtml(prodName)}</strong></td>
         <td><input type="date" class="op-line-date" value="${escapeHtml(startIso)}" style="padding:4px 6px; font-size:12px;" /></td>
-        <td><input type="text" class="op-line-time" value="${escapeHtml(startTime)}" placeholder="e.g. 07:30 AM / Variable" style="width:165px; padding:4px 6px; font-size:12px;" /></td>
-        <td><input type="number" class="op-line-pax" value="${escapeHtml(qty)}" min="1" style="width:65px; padding:4px 6px; font-size:12px;" /></td>
-        <td><input type="number" step="0.01" class="op-line-price" value="${escapeHtml(price)}" style="width:85px; padding:4px 6px; font-size:12px;" /></td>
+        <td><input type="text" class="op-line-time" value="${escapeHtml(startTime)}" placeholder="e.g. 07:30 AM" style="width:120px; padding:4px 6px; font-size:12px;" /></td>
+        <td><input type="number" class="op-line-pax" value="${escapeHtml(qty)}" min="1" style="width:55px; padding:4px 6px; font-size:12px;" /></td>
+        <td><input type="number" step="0.01" class="op-line-price" value="${escapeHtml(price)}" style="width:75px; padding:4px 6px; font-size:12px;" /></td>
+        <td><input type="text" class="op-line-conf" value="${escapeHtml(lineMeta.conf || "")}" placeholder="Conf #" style="width:115px; padding:4px 6px; font-size:12px;" /></td>
+        <td><input type="text" class="op-line-note" value="${escapeHtml(lineMeta.note || "")}" placeholder="Service note..." style="width:140px; padding:4px 6px; font-size:12px;" /></td>
       </tr>
     `;
   }).join("");
@@ -2884,9 +3036,11 @@ function renderOpServicesEditor(fullOp) {
         <tr>
           <th>Service</th>
           <th>Start Date</th>
-          <th>Start Time / Schedule</th>
+          <th>Time</th>
           <th>Pax</th>
           <th>Cost pp</th>
+          <th>Service Conf #</th>
+          <th>Service Note</th>
         </tr>
       </thead>
       <tbody>${rowsHtml}</tbody>
@@ -2901,9 +3055,13 @@ window.openPayModal = async function (dealId, opId) {
   const op = ops.find((o) => o.id === opId);
   if (!op) return;
 
+  const opMeta = getOpMeta(dealId, opId);
+
   if ($("payOpId")) $("payOpId").value = op.id;
   if ($("payOpName")) $("payOpName").textContent = buildOperationReferenceString(deal, op);
   if ($("payResStatus")) $("payResStatus").value = op.Bill_Status || "Supplier Confirmation Awaited";
+  if ($("paySupplierConf")) $("paySupplierConf").value = opMeta.conf || "";
+  if ($("payHubOpNote")) $("payHubOpNote").value = opMeta.note || "";
   if ($("payActionType")) $("payActionType").value = "NONE";
   $("scheduledFields")?.classList.add("hidden");
   $("paidNowFields")?.classList.add("hidden");
@@ -2913,6 +3071,9 @@ window.openPayModal = async function (dealId, opId) {
   if ($("payDate")) $("payDate").value = today;
   if ($("payAmount")) $("payAmount").value = op.Grand_Total || 0;
   if ($("payDetailsNotes")) $("payDetailsNotes").value = op.Details_of_Product || "";
+  if ($("payPassengerDetails")) {
+    $("payPassengerDetails").value = op.Passenger_Details || buildSupplierPassengerDetailsText(dealId);
+  }
   if ($("opServicesEditorWrap")) {
     $("opServicesEditorWrap").innerHTML = `<div class="empty-state" style="padding:12px;">Loading service schedules...</div>`;
   }
@@ -2939,26 +3100,34 @@ window.openPayModal = async function (dealId, opId) {
   if ($("payDetailsNotes")) {
     $("payDetailsNotes").value = (fullOp?.Details_of_Product ?? op.Details_of_Product) || "";
   }
-  renderOpServicesEditor(STATE.editingOpRecord);
+  if ($("payPassengerDetails")) {
+    $("payPassengerDetails").value = (fullOp?.Passenger_Details ?? op.Passenger_Details) || buildSupplierPassengerDetailsText(dealId);
+  }
+  renderOpServicesEditor(dealId, opId, STATE.editingOpRecord);
 };
 
 async function submitOperationUpdate() {
   const dealId = STATE.expandedBookingId;
   const opId = $("payOpId")?.value;
   const resStatus = $("payResStatus")?.value;
+  const supplierConf = ($("paySupplierConf")?.value || "").trim();
+  const hubOpNote = ($("payHubOpNote")?.value || "").trim();
   const actionType = $("payActionType")?.value;
   const detailsNotes = ($("payDetailsNotes")?.value || "").trim();
+  const passengerDetailsText = ($("payPassengerDetails")?.value || "").trim();
   const ops = STATE.operationsByDeal[dealId] || [];
   const op = STATE.editingOpRecord || ops.find((o) => o.id === opId);
 
   const updateData = {
     id: opId,
     Bill_Status: resStatus,
-    Details_of_Product: detailsNotes
+    Details_of_Product: detailsNotes,
+    Passenger_Details: passengerDetailsText
   };
 
   const existingLines = Array.isArray(op?.Product_Details) ? op.Product_Details : [];
   const editorRows = Array.from(document.querySelectorAll("#opServicesEditorWrap tbody tr"));
+  const linesMetaMap = {};
 
   if (existingLines.length && editorRows.length) {
     const updatedProductDetails = existingLines.map((origLine, idx) => {
@@ -2974,11 +3143,18 @@ async function submitOperationUpdate() {
         const tmVal = (tr.querySelector(".op-line-time")?.value || "").trim();
         const paxVal = parseInt(tr.querySelector(".op-line-pax")?.value, 10) || 1;
         const priceVal = parseFloat(tr.querySelector(".op-line-price")?.value) || 0;
+        const lineConf = (tr.querySelector(".op-line-conf")?.value || "").trim();
+        const lineNote = (tr.querySelector(".op-line-note")?.value || "").trim();
+        const lineKey = tr.dataset.lineKey || origLine.id || `idx_${idx}`;
 
         if (dtVal) rowPayload.Trip_Start_Date = dtVal;
         rowPayload.Start_Time = tmVal;
         rowPayload.Qty = paxVal;
         rowPayload.List_Price = priceVal;
+
+        if (lineConf || lineNote) {
+          linesMetaMap[lineKey] = { conf: lineConf, note: lineNote };
+        }
       }
       return rowPayload;
     });
@@ -3014,18 +3190,25 @@ async function submitOperationUpdate() {
   }
 
   try {
-    showToast("Updating operation & schedules...");
-    await ZOHO.CRM.API.updateRecord({
-      Entity: "Bills",
-      APIData: updateData,
-      Trigger: ["workflow"]
-    });
+    showToast("Updating operation, schedules & confirmations...");
+    await Promise.all([
+      ZOHO.CRM.API.updateRecord({
+        Entity: "Bills",
+        APIData: updateData,
+        Trigger: ["workflow"]
+      }),
+      persistOpMetaToCrm(dealId, opId, {
+        conf: supplierConf,
+        note: hubOpNote,
+        lines: linesMetaMap
+      })
+    ]);
 
-    // Update local memory immediately so UI reflects edits without waiting for CRM search index
     const localOp = ops.find((o) => o.id === opId);
     if (localOp) {
       localOp.Bill_Status = resStatus;
       localOp.Details_of_Product = detailsNotes;
+      localOp.Passenger_Details = passengerDetailsText;
       if (actionType === "SCHEDULED") {
         localOp.Expected_Payment_Date = updateData.Expected_Payment_Date;
         localOp.Payment_Status = "Programmed Payment";
@@ -3038,9 +3221,9 @@ async function submitOperationUpdate() {
     STATE.editingOpRecord = null;
     toggleModal("payModal", false);
     renderBookingsAccordion();
-    showToast("Operation updated! Use '↻ Sync Trip' if Zoho workflow fields are still propagating.");
+    showToast("Operation & confirmations saved!");
   } catch (err) {
-    console.error("Error updating Bill:", err);
-    showToast("Error updating operation.");
+    console.error("Error updating Bill / OPS Hub meta:", err);
+    showToast("Error saving operation changes.");
   }
 }
